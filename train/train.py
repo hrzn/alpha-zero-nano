@@ -59,11 +59,12 @@ def train_step(model, optimizer, batch):
         loss value as a float
     """
     model.train()
+    device = next(model.parameters()).device
     encoded_states, policies, outcomes = batch
 
-    states_t = torch.tensor(encoded_states, dtype=torch.float32)
-    policies_t = torch.tensor(policies, dtype=torch.float32)
-    outcomes_t = torch.tensor(outcomes, dtype=torch.float32)
+    states_t = torch.tensor(encoded_states, dtype=torch.float32).to(device)
+    policies_t = torch.tensor(policies, dtype=torch.float32).to(device)
+    outcomes_t = torch.tensor(outcomes, dtype=torch.float32).to(device)
 
     policy_logits, values = model(states_t)
 

@@ -83,8 +83,9 @@ class ResNet(nn.Module):
     def predict(self, state: np.ndarray, player: int):
         """Run inference on a single state. Returns (policy, value) as numpy."""
         self.eval()
+        device = next(self.parameters()).device
         encoded = self.encode_state(state, player)
-        x = torch.tensor(encoded, dtype=torch.float32).unsqueeze(0)
+        x = torch.tensor(encoded, dtype=torch.float32).unsqueeze(0).to(device)
         policy_logits, value = self(x)
-        policy = torch.softmax(policy_logits, dim=1).squeeze(0).numpy()
+        policy = torch.softmax(policy_logits, dim=1).squeeze(0).cpu().numpy()
         return policy, float(value.item())
