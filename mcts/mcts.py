@@ -81,20 +81,20 @@ class MCTS:
         self.num_searches = num_searches
         self.c_puct = c_puct
 
-    def _evaluate(self, state):
+    def _evaluate(self, state, player):
         """Get policy and value from the model, or use defaults if no model."""
         if self.model is None:
             policy = np.ones(self.game.action_size) / self.game.action_size
             value = 0.0
             return policy, value
-        return self.model.predict(state)
+        return self.model.predict(state, player)
 
     def search(self, state, player):
         """Run MCTS from the given state and return a policy vector."""
         root = Node(self.game, state.copy(), player)
 
         # Expand root
-        policy, _ = self._evaluate(state)
+        policy, _ = self._evaluate(state, player)
         root.expand(policy)
 
         for _ in range(self.num_searches):
@@ -116,7 +116,7 @@ class MCTS:
                 value = -value
             else:
                 # Expand and evaluate
-                policy, value = self._evaluate(node.state)
+                policy, value = self._evaluate(node.state, node.player)
                 node.expand(policy)
 
             # Backpropagate
