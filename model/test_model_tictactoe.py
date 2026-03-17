@@ -21,7 +21,7 @@ def model(game):
 class TestStateEncodingTicTacToe:
     def test_empty_board_encoding(self, game, model):
         state = game.get_initial_state()
-        encoded = model.encode_state(state, player=1)
+        encoded = game.encode_state(state, player=1)
 
         # Shape: (3, rows, cols)
         assert encoded.shape == (3, game.row_count, game.column_count)
@@ -33,7 +33,7 @@ class TestStateEncodingTicTacToe:
         state = game.get_initial_state()
         state = game.update_state(state, 0, 1)  # player 1 at top-left
         state = game.update_state(state, 4, -1)  # player 2 at center
-        encoded = model.encode_state(state, player=1)
+        encoded = game.encode_state(state, player=1)
 
         assert encoded[0, 0, 0] == 1  # player 1 at position (0,0)
         assert encoded[0, 1, 1] == 0  # player 1 not at center
@@ -46,8 +46,8 @@ class TestStateEncodingTicTacToe:
         state = game.update_state(state, 0, 1)   # player 1 at top-left
         state = game.update_state(state, 4, -1)  # player 2 at center
 
-        enc1 = model.encode_state(state, player=1)
-        enc2 = model.encode_state(state, player=-1)
+        enc1 = game.encode_state(state, player=1)
+        enc2 = game.encode_state(state, player=-1)
 
         # From player 2's view, their pieces are in channel 0
         assert enc2[0, 1, 1] == 1   # player 2's piece in "own" channel
@@ -114,7 +114,7 @@ class TestModelArchitectureTicTacToe:
     def test_backward_pass(self, game, model):
         """Model must be differentiable for training."""
         state = game.get_initial_state()
-        encoded = model.encode_state(state, player=1)
+        encoded = game.encode_state(state, player=1)
         x = torch.tensor(encoded, dtype=torch.float32).unsqueeze(0)
 
         policy_logits, value = model(x)

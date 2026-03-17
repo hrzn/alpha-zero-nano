@@ -8,6 +8,7 @@ class TicTacToe:
         self.row_count = 3
         self.column_count = 3
         self.action_size = self.row_count * self.column_count
+        self.num_channels = 3  # current player, opponent, empty
 
     def action_to_row_col(self, action: int) -> tuple[int, int]:
         """Transforms an integer action into a (row, col) tuple."""
@@ -49,3 +50,16 @@ class TicTacToe:
     
     def get_opponent(self, player):
         return -player
+
+    def encode_state(self, state: np.ndarray, player: int) -> np.ndarray:
+        """Encode board as 3 channels from the given player's perspective.
+
+        Channel 0: current player's pieces
+        Channel 1: opponent's pieces
+        Channel 2: empty squares
+        """
+        encoded = np.zeros((3, self.row_count, self.column_count), dtype=np.float32)
+        encoded[0] = (state == player).astype(np.float32)
+        encoded[1] = (state == -player).astype(np.float32)
+        encoded[2] = (state == 0).astype(np.float32)
+        return encoded

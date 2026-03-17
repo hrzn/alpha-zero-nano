@@ -8,27 +8,35 @@ import torch.optim as optim
 from mcts.mcts import MCTS
 
 
-def self_play(game, mcts, model):
+def self_play(game, mcts, model, max_moves=None):
     """Play one game via MCTS+model and return training examples.
 
     Returns a list of (encoded_state, policy, outcome) tuples where:
-    - encoded_state: (3, rows, cols) float32 array from the acting player's perspective
+    - encoded_state: (num_channels, rows, cols) float32 array from the acting player's perspective
     - policy: (action_size,) float32 array of MCTS visit-count probabilities
     - outcome: float in {-1, 0, 1} from the acting player's perspective
+
+    max_moves: if set, the game is declared a draw after this many moves.
+               Useful for chess where games can be very long early in training.
     """
     examples = []  # (encoded_state, policy, player)
     state = game.get_initial_state()
     player = 1
+    move_count = 0
 
     while True:
         policy = mcts.search(state, player)
-        encoded_state = model.encode_state(state, player)
+        encoded_state = game.encode_state(state, player)
         examples.append((encoded_state, policy, player))
 
         action = np.random.choice(game.action_size, p=policy)
         state = game.update_state(state, action, player)
+        move_count += 1
 
         value, terminated = game.get_value_and_terminated(state, action)
+        if not terminated and max_moves is not None and move_count >= max_moves:
+            value, terminated = 0.0, True  # declare draw
+
         if terminated:
             # Assign outcomes: value=1 means the player who just moved won
             training_examples = []
@@ -36,10 +44,8 @@ def self_play(game, mcts, model):
                 if value == 0:
                     outcome = 0.0
                 elif acting_player == player:
-                    # This player just won
                     outcome = 1.0
                 else:
-                    # This player lost
                     outcome = -1.0
                 training_examples.append((enc_state, pol, outcome))
             return training_examples

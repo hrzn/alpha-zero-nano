@@ -27,9 +27,9 @@ class ResNet(nn.Module):
         super().__init__()
         self.game = game
 
-        # Input: 3 channels (current player pieces, opponent pieces, empty)
+        # Input channels come from the game's encoding
         self.input_block = nn.Sequential(
-            nn.Conv2d(3, num_hidden, kernel_size=3, padding=1),
+            nn.Conv2d(game.num_channels, num_hidden, kernel_size=3, padding=1),
             nn.BatchNorm2d(num_hidden),
             nn.ReLU(),
         )
@@ -66,25 +66,12 @@ class ResNet(nn.Module):
         value = self.value_head(x).squeeze(-1)
         return policy_logits, value
 
-    def encode_state(self, state: np.ndarray, player: int) -> np.ndarray:
-        """Encode a board state into 3 channels from the given player's perspective.
-
-        Channel 0: current player's pieces
-        Channel 1: opponent's pieces
-        Channel 2: empty squares
-        """
-        encoded = np.zeros((3, self.game.row_count, self.game.column_count), dtype=np.float32)
-        encoded[0] = (state == player).astype(np.float32)
-        encoded[1] = (state == -player).astype(np.float32)
-        encoded[2] = (state == 0).astype(np.float32)
-        return encoded
-
     @torch.no_grad()
-    def predict(self, state: np.ndarray, player: int):
+    def predict(self, state, player: int):
         """Run inference on a single state. Returns (policy, value) as numpy."""
         self.eval()
         device = next(self.parameters()).device
-        encoded = self.encode_state(state, player)
+        encoded = self.game.encode_state(state, player)
         x = torch.tensor(encoded, dtype=torch.float32).unsqueeze(0).to(device)
         policy_logits, value = self(x)
         policy = torch.softmax(policy_logits, dim=1).squeeze(0).cpu().numpy()
