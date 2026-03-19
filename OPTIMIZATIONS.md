@@ -14,7 +14,7 @@ This document tracks five speedups designed to make chess training feasible on a
 | # | Name | Expected Speedup | Complexity | Status |
 |---|------|-----------------|------------|--------|
 | 1 | MCTS tree reuse | ~2× | Low | Implemented |
-| 2 | Transposition table | ~1.5–3× | Low-medium | Implemented |
+| 2 | Transposition table | ~1.5–3× | Low-medium | Removed (negative impact on chess; superseded by Opt 4 batch deduplication) |
 | 3 | Parallel self-play | ~8× (M1 cores) | Medium | Implemented |
 | 4 | Batched MCTS inference | ~10–30× | High | Not implemented |
 | 5 | MPS for training step | ~small | Trivial | Partially done |
@@ -41,24 +41,21 @@ For num_searches=100, typically 50–70 of those visits are in the chosen child'
 
 ---
 
-## Opt 2 — Transposition Table (~1.5–3×)
+## Opt 2 — Transposition Table (Removed)
 
-**Problem:** Different paths through the game tree can reach the same board position.
-Each arrival causes a separate `model.predict()` call, even though the result is identical.
+**Was:** Cache `(position_hash, player) → (policy, value)` within each MCTS search call.
 
-**Idea:** Cache `(position_hash, player) → (policy, value)` within each MCTS search call.
-When the same position is reached via a different path, return the cached result instead
-of calling the neural network again.
+**Why removed:** Benchmarking showed a slight slowdown for chess (0.98×). Chess's high
+branching factor (~35) means 100 simulations rarely revisit the same position, so cache
+hits are scarce. Meanwhile, computing `hash(board.fen())` + dict lookup on every
+`_evaluate()` call adds overhead that outweighs the savings.
 
-**Changes:**
-- `tictactoe/tictactoe.py`: Added `state_hash(state) → int` using `hash(state.tobytes())`.
-- `chess_game/chess_game.py`: Added `state_hash(state) → int` using `board.zobrist_hash()`.
-- `mcts/mcts.py`: `_evaluate()` checks `self._cache` before calling `model.predict()`.
-  Cache is cleared at the start of each `search()` call (fresh per search, no stale data).
+**What remains:** `state_hash()` is kept on `TicTacToe` and `ChessGame` — it's a
+one-liner with zero cost when unused, and Opt 4's batch deduplication step will use it
+to identify duplicate leaves before the batched forward pass.
 
-**Why it helps:** Chess positions are frequently transposed (same position via different
-move orders). In MCTS, multiple simulation paths can converge to the same leaf, reducing
-effective model calls by 1.5–3× depending on position complexity.
+**Superseded by:** Opt 4 (batched MCTS inference) handles deduplication more
+effectively at the batch level, before the expensive GPU/CPU forward call.
 
 ---
 

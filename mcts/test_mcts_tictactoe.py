@@ -4,7 +4,6 @@ import numpy as np
 import pytest
 
 from mcts.mcts import MCTS, Node
-from model.model import ResNet
 from tictactoe.tictactoe import TicTacToe
 
 
@@ -214,72 +213,3 @@ class TestTreeReuse:
         assert policy.sum() == pytest.approx(1.0, abs=1e-5)
 
 
-class TestTranspositionTable:
-    """Opt 2: transposition table reduces model.predict() calls."""
-
-    def test_cache_reduces_model_calls(self, game):
-        """With transposition table, model should be called fewer than num_searches times."""
-        call_count = [0]
-
-        class CountingModel:
-            def predict(self, state, player):
-                call_count[0] += 1
-                return np.ones(game.action_size) / game.action_size, 0.0
-
-        mcts = MCTS(game, model=CountingModel(), num_searches=100)
-        state = game.get_initial_state()
-        mcts.search(state, player=1)
-
-        # Many paths converge to the same TicTacToe positions, so we expect
-        # fewer model calls than simulations due to caching.
-        assert call_count[0] < 100
-
-    def test_cache_exists_after_search(self, game):
-        """MCTS should have a _cache attribute after search."""
-        mcts = MCTS(game, model=None, num_searches=10)
-        state = game.get_initial_state()
-        mcts.search(state, player=1)
-        assert hasattr(mcts, "_cache")
-
-    def test_cache_cleared_at_search_start(self, game):
-        """Cache should be fresh (not carry over stale entries) across searches."""
-        call_counts = []
-
-        class CountingModel:
-            def __init__(self):
-                self.count = 0
-
-            def predict(self, state, player):
-                self.count += 1
-                return np.ones(game.action_size) / game.action_size, 0.0
-
-        model = CountingModel()
-        mcts = MCTS(game, model=model, num_searches=20)
-        state = game.get_initial_state()
-
-        model.count = 0
-        mcts.search(state, player=1)
-        count1 = model.count
-
-        model.count = 0
-        mcts.search(state, player=1)  # second search, cache starts fresh
-        count2 = model.count
-
-        # Both searches start from the same root and should make a similar
-        # number of model calls (second search is not free from a carried-over cache).
-        assert count2 > 0
-
-    def test_policy_quality_unchanged_by_caching(self, game):
-        """Transposition table must not corrupt policy — winning move still found."""
-        model_fixture = ResNet(game, num_res_blocks=2, num_hidden=64)
-        mcts = MCTS(game, model=model_fixture, num_searches=100)
-
-        # X has two in a row; action 2 wins
-        state = game.get_initial_state()
-        state = game.update_state(state, 0, 1)
-        state = game.update_state(state, 3, -1)
-        state = game.update_state(state, 1, 1)
-        state = game.update_state(state, 4, -1)
-
-        policy = mcts.search(state, player=1)
-        assert policy[2] == max(policy)
