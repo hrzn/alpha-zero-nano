@@ -1,4 +1,12 @@
-"""AlphaZero-style Monte Carlo Tree Search with PUCT selection."""
+"""AlphaZero-style Monte Carlo Tree Search with PUCT selection.
+
+Optimizations implemented:
+  Opt 1 — Tree reuse: advance_root() promotes a child to root so the next
+           search() call reuses its visit counts instead of starting fresh.
+  Opt 2 — Transposition table: _evaluate() caches (state_hash, player) →
+           (policy, value) within each search() call, reducing model calls
+           when the same position is reached via multiple paths.
+"""
 
 import math
 
@@ -80,22 +88,52 @@ class MCTS:
         self.model = model
         self.num_searches = num_searches
         self.c_puct = c_puct
+        self._root = None  # Opt 1: tree reuse
+        self._cache = {}   # Opt 2: transposition table
 
     def _evaluate(self, state, player):
-        """Get policy and value from the model, or use defaults if no model."""
+        """Get policy and value from the model.
+
+        Uses the transposition table cache (Opt 2) when the game implements
+        state_hash(), so the same position reached via different paths only
+        calls model.predict() once per search.
+        """
         if self.model is None:
-            policy = np.ones(self.game.action_size) / self.game.action_size
-            value = 0.0
-            return policy, value
-        return self.model.predict(state, player)
+            return np.ones(self.game.action_size) / self.game.action_size, 0.0
+
+        key = (self.game.state_hash(state), player)
+        if key in self._cache:
+            return self._cache[key]
+        result = self.model.predict(state, player)
+        self._cache[key] = result
+        return result
+
+    def advance_root(self, action):
+        """Opt 1: promote the child at action to be the new root.
+
+        Call this after each move in self-play so the next search() reuses
+        the subtree already explored under that child. If the action was
+        not explored, _root is reset to None (fresh tree on next search).
+        """
+        if self._root is not None and action in self._root.children:
+            self._root = self._root.children[action]
+            self._root.parent = None
+        else:
+            self._root = None
 
     def search(self, state, player):
         """Run MCTS from the given state and return a policy vector."""
-        root = Node(self.game, state.copy(), player)
+        self._cache = {}  # Opt 2: clear transposition table for this search
 
-        # Expand root
-        policy, _ = self._evaluate(state, player)
-        root.expand(policy)
+        # Opt 1: reuse existing root if available (set via advance_root),
+        # otherwise build a fresh root and expand it.
+        if self._root is None:
+            root = Node(self.game, state.copy(), player)
+            policy, _ = self._evaluate(state, player)
+            root.expand(policy)
+            self._root = root
+        else:
+            root = self._root
 
         for _ in range(self.num_searches):
             node = root

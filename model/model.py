@@ -26,6 +26,8 @@ class ResNet(nn.Module):
     def __init__(self, game, num_res_blocks, num_hidden):
         super().__init__()
         self.game = game
+        self.num_res_blocks = num_res_blocks
+        self.num_hidden = num_hidden
 
         # Input channels come from the game's encoding
         self.input_block = nn.Sequential(

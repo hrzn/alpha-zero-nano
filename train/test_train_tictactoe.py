@@ -8,7 +8,7 @@ import torch.optim as optim
 from mcts.mcts import MCTS
 from model.model import ResNet
 from tictactoe.tictactoe import TicTacToe
-from train.train import AlphaZero, self_play, train_step
+from train.train import AlphaZero, parallel_self_play, self_play, train_step
 
 
 @pytest.fixture
@@ -27,34 +27,34 @@ def mcts(game, model):
 
 
 class TestSelfPlayTicTacToe:
-    def test_returns_list_of_examples(self, game, mcts, model):
-        examples = self_play(game, mcts, model)
+    def test_returns_list_of_examples(self, game, mcts):
+        examples = self_play(game, mcts)
         assert isinstance(examples, list)
         assert len(examples) > 0
 
-    def test_example_structure(self, game, mcts, model):
+    def test_example_structure(self, game, mcts):
         """Each example is a (encoded_state, policy, outcome) tuple."""
-        examples = self_play(game, mcts, model)
+        examples = self_play(game, mcts)
         encoded_state, policy, outcome = examples[0]
 
         assert encoded_state.shape == (3, game.row_count, game.column_count)
         assert policy.shape == (game.action_size,)
         assert isinstance(outcome, float)
 
-    def test_game_terminates(self, game, mcts, model):
+    def test_game_terminates(self, game, mcts):
         """A self-play game must terminate — at most action_size moves."""
-        examples = self_play(game, mcts, model)
+        examples = self_play(game, mcts)
         assert len(examples) <= game.action_size
 
-    def test_policies_are_valid_distributions(self, game, mcts, model):
-        examples = self_play(game, mcts, model)
+    def test_policies_are_valid_distributions(self, game, mcts):
+        examples = self_play(game, mcts)
         for _, policy, _ in examples:
             assert policy.sum() == pytest.approx(1.0, abs=1e-5)
             assert (policy >= 0).all()
 
-    def test_outcomes_are_valid(self, game, mcts, model):
+    def test_outcomes_are_valid(self, game, mcts):
         """Outcomes must be -1, 0, or 1 from each player's perspective."""
-        examples = self_play(game, mcts, model)
+        examples = self_play(game, mcts)
         for _, _, outcome in examples:
             assert outcome in {-1.0, 0.0, 1.0}
 
@@ -121,11 +121,11 @@ class TestAlphaZeroTicTacToe:
     def test_examples_accumulate_across_games(self, game, model, args):
         """Multiple self-play games should yield more examples than a single game."""
         mcts = MCTS(game, model=model, num_searches=args["num_searches"])
-        single_game = self_play(game, mcts, model)
+        single_game = self_play(game, mcts)
 
         examples_4_games = []
         for _ in range(4):
-            examples_4_games += self_play(game, mcts, model)
+            examples_4_games += self_play(game, mcts)
         assert len(examples_4_games) >= len(single_game)
 
     def test_batch_size_larger_than_examples(self, game, model):
@@ -153,6 +153,57 @@ class TestAlphaZeroTicTacToe:
 
         for p1, p2 in zip(model.parameters(), new_model.parameters()):
             assert torch.equal(p1, p2)
+
+
+class TestParallelSelfPlay:
+    """Opt 3: parallel_self_play runs multiple games via multiprocessing."""
+
+    def test_returns_correct_number_of_games_single_worker(self, game, model):
+        """n_workers=1 (no multiprocessing) should return examples from n_games games."""
+        mcts = MCTS(game, model=model, num_searches=5)
+        examples = parallel_self_play(game, mcts, n_games=3, max_moves=None, n_workers=1)
+        assert isinstance(examples, list)
+        assert len(examples) >= 3  # at least 1 example per game
+
+    def test_examples_have_correct_shapes_single_worker(self, game, model):
+        mcts = MCTS(game, model=model, num_searches=5)
+        examples = parallel_self_play(game, mcts, n_games=2, max_moves=None, n_workers=1)
+        for enc_state, policy, outcome in examples:
+            assert enc_state.shape == (3, game.row_count, game.column_count)
+            assert policy.shape == (game.action_size,)
+            assert isinstance(outcome, float)
+
+    def test_policies_valid_single_worker(self, game, model):
+        mcts = MCTS(game, model=model, num_searches=5)
+        examples = parallel_self_play(game, mcts, n_games=2, max_moves=None, n_workers=1)
+        for _, policy, _ in examples:
+            assert policy.sum() == pytest.approx(1.0, abs=1e-5)
+            assert (policy >= 0).all()
+
+    def test_outcomes_valid_single_worker(self, game, model):
+        mcts = MCTS(game, model=model, num_searches=5)
+        examples = parallel_self_play(game, mcts, n_games=2, max_moves=None, n_workers=1)
+        for _, _, outcome in examples:
+            assert outcome in {-1.0, 0.0, 1.0}
+
+    def test_multi_worker_returns_examples(self, game, model):
+        """Multi-worker path should also return a valid list of examples."""
+        mcts = MCTS(game, model=model, num_searches=5)
+        examples = parallel_self_play(game, mcts, n_games=4, max_moves=None, n_workers=2)
+        assert isinstance(examples, list)
+        assert len(examples) >= 4
+
+    def test_multi_worker_outcomes_valid(self, game, model):
+        mcts = MCTS(game, model=model, num_searches=5)
+        examples = parallel_self_play(game, mcts, n_games=4, max_moves=None, n_workers=2)
+        for _, _, outcome in examples:
+            assert outcome in {-1.0, 0.0, 1.0}
+
+    def test_requires_model_in_mcts(self, game):
+        """parallel_self_play must raise if MCTS has no model."""
+        mcts = MCTS(game, model=None, num_searches=5)
+        with pytest.raises(ValueError, match="model"):
+            parallel_self_play(game, mcts, n_games=1, n_workers=1)
 
 
 def _make_batch(game, model, batch_size):

@@ -1,4 +1,11 @@
-"""Self-play and training loop for AlphaZero."""
+"""Self-play and training loop for AlphaZero.
+
+Optimizations:
+  Opt 1 — Tree reuse: self_play() calls mcts.advance_root(action) after each
+           move so the next search reuses the explored subtree.
+  Opt 3 — Parallel self-play: parallel_self_play() runs multiple games
+           simultaneously across CPU cores using multiprocessing.
+"""
 
 import numpy as np
 import torch
@@ -8,7 +15,7 @@ import torch.optim as optim
 from mcts.mcts import MCTS
 
 
-def self_play(game, mcts, model, max_moves=None):
+def self_play(game, mcts: MCTS, max_moves=None):
     """Play one game via MCTS+model and return training examples.
 
     Returns a list of (encoded_state, policy, outcome) tuples where:
@@ -19,6 +26,7 @@ def self_play(game, mcts, model, max_moves=None):
     max_moves: if set, the game is declared a draw after this many moves.
                Useful for chess where games can be very long early in training.
     """
+    mcts._root = None  # each game starts with a fresh tree (Opt 1: reuse is within a game)
     examples = []  # (encoded_state, policy, player)
     state = game.get_initial_state()
     player = 1
@@ -30,6 +38,7 @@ def self_play(game, mcts, model, max_moves=None):
         examples.append((encoded_state, policy, player))
 
         action = np.random.choice(game.action_size, p=policy)
+        mcts.advance_root(action)  # Opt 1: tree reuse — promote child to root
         state = game.update_state(state, action, player)
         move_count += 1
 
@@ -51,6 +60,67 @@ def self_play(game, mcts, model, max_moves=None):
             return training_examples
 
         player = game.get_opponent(player)
+
+
+def _worker_self_play(task):
+    """Top-level worker function for parallel_self_play (must be picklable).
+
+    Reconstructs the game, model, and MCTS from serializable arguments so it
+    can run in a spawned subprocess without inheriting shared state.
+    """
+    from model.model import ResNet
+    from mcts.mcts import MCTS as _MCTS
+
+    game_cls, state_dict_cpu, num_res_blocks, num_hidden, num_searches, c_puct, max_moves = task
+    game = game_cls()
+    model = ResNet(game, num_res_blocks=num_res_blocks, num_hidden=num_hidden)
+    model.load_state_dict(state_dict_cpu)
+    model.eval()
+    mcts = _MCTS(game, model=model, num_searches=num_searches, c_puct=c_puct)
+    return self_play(game, mcts, max_moves=max_moves)
+
+
+def parallel_self_play(game, mcts: MCTS, n_games, max_moves=None, n_workers=4):
+    """Play n_games in parallel using multiprocessing (Opt 3).
+
+    Each worker receives the model weights (not the model object) and creates
+    its own ResNet + MCTS instances, avoiding shared-state issues.
+
+    Args:
+        game: game instance (must be reconstructable via type(game)())
+        mcts: MCTS instance with a model attached
+        n_games: total number of self-play games to run
+        max_moves: passed to self_play in each worker
+        n_workers: number of parallel worker processes
+
+    Returns:
+        Combined list of training examples from all n_games games.
+    """
+    import multiprocessing
+
+    model = mcts.model
+    if model is None:
+        raise ValueError("parallel_self_play requires MCTS to have a model")
+
+    state_dict_cpu = {k: v.cpu() for k, v in model.state_dict().items()}
+    task = (
+        type(game),
+        state_dict_cpu,
+        model.num_res_blocks,
+        model.num_hidden,
+        mcts.num_searches,
+        mcts.c_puct,
+        max_moves,
+    )
+    tasks = [task] * n_games
+
+    if n_workers == 1:
+        return sum((_worker_self_play(t) for t in tasks), [])
+
+    ctx = multiprocessing.get_context("spawn")
+    with ctx.Pool(n_workers) as pool:
+        results = pool.map(_worker_self_play, tasks)
+    return sum(results, [])
 
 
 def train_step(model, optimizer, batch):
@@ -94,6 +164,7 @@ class AlphaZero:
           num_epochs        — training epochs per iteration
           batch_size        — examples per gradient step
           lr                — learning rate
+          max_moves         — (optional) draw after this many moves
         """
         self.game = game
         self.model = model
@@ -103,11 +174,12 @@ class AlphaZero:
 
     def run(self, num_iterations):
         """Run the full AlphaZero training loop."""
+        max_moves = self.args.get("max_moves")
         for _ in range(num_iterations):
             # Self-play: collect examples from all games this iteration
             examples = []
             for _ in range(self.args["num_self_play_games"]):
-                examples += self_play(self.game, self.mcts, self.model)
+                examples += self_play(self.game, self.mcts, max_moves=max_moves)
 
             # Unpack into arrays
             encoded_states = np.array([e[0] for e in examples], dtype=np.float32)

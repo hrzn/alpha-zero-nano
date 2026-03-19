@@ -51,6 +51,9 @@ class TicTacToe:
     def get_opponent(self, player):
         return -player
 
+    def state_hash(self, state: np.ndarray) -> int:
+        return hash(state.tobytes())
+
     def encode_state(self, state: np.ndarray, player: int) -> np.ndarray:
         """Encode board as 3 channels from the given player's perspective.
 

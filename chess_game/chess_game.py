@@ -63,6 +63,9 @@ class ChessGame:
     def get_opponent(self, player: int) -> int:
         return -player
 
+    def state_hash(self, state: chess.Board) -> int:
+        return hash(state.fen())
+
     # ------------------------------------------------------------------
     # Action encoding helpers
     # ------------------------------------------------------------------
