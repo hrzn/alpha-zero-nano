@@ -106,8 +106,9 @@ with batch_size=1. GPU/MPS utilization is extremely low.
 
 **Usage:** Pass `batch_size=N` to `MCTS(...)`. Recommended N: 16–64.
 
-**Known limitation:** Opt 3 (parallel self-play) + Opt 4 are not combined. Workers in
-`parallel_self_play` use the default `batch_size=1`.
+**Opts 3+4 combined:** `parallel_self_play` workers receive `batch_size` via the task
+tuple and each worker runs its own batched MCTS. The two speedups multiply: Opt 3 gives
+~N× from parallelism, Opt 4 gives ~1.5–2× per worker from batched inference.
 
 ---
 

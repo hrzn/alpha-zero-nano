@@ -71,12 +71,12 @@ def _worker_self_play(task):
     from model.model import ResNet
     from mcts.mcts import MCTS as _MCTS
 
-    game_cls, state_dict_cpu, num_res_blocks, num_hidden, num_searches, c_puct, max_moves = task
+    game_cls, state_dict_cpu, num_res_blocks, num_hidden, num_searches, c_puct, batch_size, max_moves = task
     game = game_cls()
     model = ResNet(game, num_res_blocks=num_res_blocks, num_hidden=num_hidden)
     model.load_state_dict(state_dict_cpu)
     model.eval()
-    mcts = _MCTS(game, model=model, num_searches=num_searches, c_puct=c_puct)
+    mcts = _MCTS(game, model=model, num_searches=num_searches, c_puct=c_puct, batch_size=batch_size)
     return self_play(game, mcts, max_moves=max_moves)
 
 
@@ -110,6 +110,7 @@ def parallel_self_play(game, mcts: MCTS, n_games, max_moves=None, n_workers=4):
         model.num_hidden,
         mcts.num_searches,
         mcts.c_puct,
+        mcts.batch_size,
         max_moves,
     )
     tasks = [task] * n_games
