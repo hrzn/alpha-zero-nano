@@ -213,3 +213,83 @@ class TestTreeReuse:
         assert policy.sum() == pytest.approx(1.0, abs=1e-5)
 
 
+class TestBatchedMCTSTicTacToe:
+    """Opt 4: batched MCTS inference via virtual loss."""
+
+    @pytest.fixture
+    def batched_mcts(self, game):
+        return MCTS(game, model=None, num_searches=100, batch_size=8)
+
+    def test_policy_sums_to_one(self, game, batched_mcts):
+        state = game.get_initial_state()
+        policy = batched_mcts.search(state, player=1)
+        assert policy.sum() == pytest.approx(1.0, abs=1e-5)
+
+    def test_policy_non_negative(self, game, batched_mcts):
+        state = game.get_initial_state()
+        policy = batched_mcts.search(state, player=1)
+        assert (policy >= 0).all()
+
+    def test_policy_zero_on_occupied(self, game, batched_mcts):
+        state = game.get_initial_state()
+        state = game.update_state(state, 0, 1)
+        state = game.update_state(state, 4, -1)
+        policy = batched_mcts.search(state, player=1)
+        assert policy[0] == 0.0
+        assert policy[4] == 0.0
+
+    def test_policy_length(self, game, batched_mcts):
+        state = game.get_initial_state()
+        policy = batched_mcts.search(state, player=1)
+        assert len(policy) == game.action_size
+
+    def test_finds_winning_move(self, game):
+        """Batched MCTS should find the obvious winning move."""
+        mcts = MCTS(game, model=None, num_searches=100, batch_size=8)
+        state = game.get_initial_state()
+        state = game.update_state(state, 0, 1)
+        state = game.update_state(state, 3, -1)
+        state = game.update_state(state, 1, 1)
+        state = game.update_state(state, 4, -1)
+        # Player 1's turn, action 2 wins
+
+        policy = mcts.search(state, player=1)
+        assert policy[2] == max(policy)
+
+    def test_blocks_opponent_win(self, game):
+        """Batched MCTS should block the opponent's winning move."""
+        mcts = MCTS(game, model=None, num_searches=100, batch_size=8)
+        state = game.get_initial_state()
+        state = game.update_state(state, 0, 1)
+        state = game.update_state(state, 3, -1)
+        state = game.update_state(state, 8, 1)
+        state = game.update_state(state, 4, -1)
+
+        policy = mcts.search(state, player=1)
+        assert policy[5] == max(policy)
+
+    def test_batch_size_greater_than_num_searches(self, game):
+        """batch_size > num_searches should not crash and return a valid policy."""
+        mcts = MCTS(game, model=None, num_searches=5, batch_size=32)
+        state = game.get_initial_state()
+        policy = mcts.search(state, player=1)
+        assert policy.sum() == pytest.approx(1.0, abs=1e-5)
+        assert (policy >= 0).all()
+
+    def test_num_searches_not_multiple_of_batch_size(self, game):
+        """num_searches not divisible by batch_size should produce a valid policy."""
+        mcts = MCTS(game, model=None, num_searches=10, batch_size=3)
+        state = game.get_initial_state()
+        policy = mcts.search(state, player=1)
+        assert policy.sum() == pytest.approx(1.0, abs=1e-5)
+        assert (policy >= 0).all()
+
+    def test_visit_count_invariant(self, game):
+        """Total visit counts across children should equal num_searches (VL fully undone)."""
+        num_searches = 50
+        mcts = MCTS(game, model=None, num_searches=num_searches, batch_size=8)
+        state = game.get_initial_state()
+        mcts.search(state, player=1)
+        root = mcts._root
+        total_child_visits = sum(c.visit_count for c in root.children.values())
+        assert total_child_visits == num_searches

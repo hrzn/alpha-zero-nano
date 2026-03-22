@@ -7,8 +7,11 @@ Usage:
     # Baseline (no optimizations):
     uv run python benchmark.py baseline --no-tree-reuse --no-cache
 
-    # With all optimizations active:
-    uv run python benchmark.py opts-1-2-3
+    # With all optimizations active (Opts 1+3):
+    uv run python benchmark.py opts-1-3
+
+    # With batched inference (Opt 4, batch_size=32):
+    uv run python benchmark.py opts-1-3-4 --batch-size=32
 
     # Show speedup table comparing the last two recorded runs:
     uv run python benchmark.py --compare
@@ -16,6 +19,7 @@ Usage:
 Flags:
     --no-tree-reuse   Disable Opt 1: force a fresh MCTS tree every move
     --no-cache        Disable Opt 2: bypass the transposition table
+    --batch-size=N    Enable Opt 4: batched MCTS inference with batch size N
     --compare         Print a speedup comparison of the two most recent runs
                       (no new benchmark is run)
 """
@@ -40,6 +44,8 @@ NUM_SELF_PLAY_GAMES_EST = 15  # for iteration-time extrapolation
 PARALLEL_N_GAMES = 4          # games to run in parallel benchmark
 PARALLEL_N_WORKERS = 4        # worker processes
 
+MCTS_BATCH_SIZE = 32          # default batch size for Opt 4 benchmarks
+
 MODEL_NUM_RES_BLOCKS = 5
 MODEL_NUM_HIDDEN = 128
 
@@ -48,14 +54,18 @@ OUTPUT_FILE = "benchmark_results.json"
 
 
 def parse_args():
-    """Return (label, no_tree_reuse, no_cache, compare_only) from sys.argv."""
+    """Return (label, no_tree_reuse, no_cache, batch_size, compare_only) from sys.argv."""
     argv = sys.argv[1:]
     no_tree_reuse = "--no-tree-reuse" in argv
     no_cache = "--no-cache" in argv
     compare_only = "--compare" in argv
+    batch_size = 1
+    for a in argv:
+        if a.startswith("--batch-size="):
+            batch_size = int(a.split("=", 1)[1])
     label_parts = [a for a in argv if not a.startswith("--")]
     label = label_parts[0] if label_parts else ("baseline" if no_tree_reuse or no_cache else "optimized")
-    return label, no_tree_reuse, no_cache, compare_only
+    return label, no_tree_reuse, no_cache, batch_size, compare_only
 
 
 def apply_patches(no_tree_reuse, no_cache):
@@ -95,14 +105,14 @@ def bench_model_predict(model, game):
     return (time.perf_counter() - t0) / NUM_PREDICT_TRIALS * 1000  # ms
 
 
-def bench_mcts_search(model, game, num_sims):
+def bench_mcts_search(model, game, num_sims, batch_size=1):
     """Time one MCTS search (num_sims simulations) from the start position.
 
     Note: tree reuse has no effect here because _root is reset between trials.
     The transposition table does help within a single search call.
     """
     from mcts.mcts import MCTS
-    mcts = MCTS(game, model=model, num_searches=num_sims)
+    mcts = MCTS(game, model=model, num_searches=num_sims, batch_size=batch_size)
     state = game.get_initial_state()
 
     times = []
@@ -115,14 +125,14 @@ def bench_mcts_search(model, game, num_sims):
     return (sum(times) / len(times)) * 1000  # ms per search
 
 
-def bench_self_play_game(model, game):
+def bench_self_play_game(model, game, batch_size=1):
     """Time one complete self-play game (sequential, capped at SELF_PLAY_MAX_MOVES).
 
     Both tree reuse (Opt 1) and the transposition table (Opt 2) affect this.
     """
     from mcts.mcts import MCTS
     from train.train import self_play
-    mcts = MCTS(game, model=model, num_searches=100)
+    mcts = MCTS(game, model=model, num_searches=100, batch_size=batch_size)
     t0 = time.perf_counter()
     self_play(game, mcts, max_moves=SELF_PLAY_MAX_MOVES)
     return time.perf_counter() - t0  # seconds
@@ -151,24 +161,30 @@ def _fmt(val, unit):
 
 
 def print_single(metrics, label):
-    w = 38
+    w = 44
     print()
-    print("=" * 60)
+    print("=" * 66)
     print(f"  AlphaZero Benchmark — {label}")
-    print("=" * 60)
+    print("=" * 66)
     print(f"  {'model.predict (batch=1)':<{w}} {metrics['predict_ms']:.1f} ms")
     for n in MCTS_SIM_COUNTS:
         key = f"mcts_search_{n}_sims_ms"
         if key in metrics:
             print(f"  {'MCTS search (' + str(n) + ' sims)':<{w}} {metrics[key]:.0f} ms/move")
+        key_b = f"mcts_search_{n}_sims_batch{MCTS_BATCH_SIZE}_ms"
+        if key_b in metrics:
+            print(f"  {'MCTS search (' + str(n) + ' sims, batch' + str(MCTS_BATCH_SIZE) + ')':<{w}} {metrics[key_b]:.0f} ms/move")
     print(f"  {'Self-play game (' + str(SELF_PLAY_MAX_MOVES) + ' moves, 1 worker)':<{w}} {metrics['self_play_game_s']:.1f} s")
+    key_sp_b = f"self_play_game_batch{MCTS_BATCH_SIZE}_s"
+    if key_sp_b in metrics:
+        print(f"  {'Self-play game (' + str(SELF_PLAY_MAX_MOVES) + ' moves, batch' + str(MCTS_BATCH_SIZE) + ')':<{w}} {metrics[key_sp_b]:.1f} s")
     if "parallel_1w_game_s" in metrics:
         print(f"  {'Parallel self-play (1 worker/game)':<{w}} {metrics['parallel_1w_game_s']:.1f} s/game")
     if "parallel_Nw_game_s" in metrics:
         print(f"  {'Parallel self-play (' + str(PARALLEL_N_WORKERS) + ' workers/game)':<{w}} {metrics['parallel_Nw_game_s']:.1f} s/game")
     est = metrics["est_iteration_s"]
     print(f"  {'Est. iteration (' + str(NUM_SELF_PLAY_GAMES_EST) + ' games)':<{w}} {est:.0f} s  (~{est/60:.1f} min)")
-    print("=" * 60)
+    print("=" * 66)
     print()
 
 
@@ -187,7 +203,11 @@ def print_comparison(history):
         ("mcts_search_50_sims_ms", "MCTS  50 sims (ms/move)"),
         ("mcts_search_100_sims_ms","MCTS 100 sims (ms/move)"),
         ("mcts_search_200_sims_ms","MCTS 200 sims (ms/move)"),
+        (f"mcts_search_50_sims_batch{MCTS_BATCH_SIZE}_ms",  f"MCTS  50 sims batch{MCTS_BATCH_SIZE} (ms/move)"),
+        (f"mcts_search_100_sims_batch{MCTS_BATCH_SIZE}_ms", f"MCTS 100 sims batch{MCTS_BATCH_SIZE} (ms/move)"),
+        (f"mcts_search_200_sims_batch{MCTS_BATCH_SIZE}_ms", f"MCTS 200 sims batch{MCTS_BATCH_SIZE} (ms/move)"),
         ("self_play_game_s",       "self-play game, sequential (s)"),
+        (f"self_play_game_batch{MCTS_BATCH_SIZE}_s", f"self-play game, batch{MCTS_BATCH_SIZE} (s)"),
         ("parallel_1w_game_s",     "parallel self-play, 1 worker (s/game)"),
         ("parallel_Nw_game_s",     f"parallel self-play, {PARALLEL_N_WORKERS} workers (s/game)"),
         ("est_iteration_s",        "est. iteration (s)"),
@@ -216,7 +236,7 @@ def print_comparison(history):
 # ── Main ─────────────────────────────────────────────────────────────────────
 
 def main():
-    label, no_tree_reuse, no_cache, compare_only = parse_args()
+    label, no_tree_reuse, no_cache, batch_size, compare_only = parse_args()
 
     # Load existing history
     try:
@@ -237,6 +257,8 @@ def main():
         flags.append("no-tree-reuse")
     if no_cache:
         flags.append("no-cache")
+    if batch_size > 1:
+        flags.append(f"batch-size={batch_size}")
     flag_str = f"  flags: {', '.join(flags)}" if flags else "  flags: (all optimizations active)"
 
     print(f"Building model (res_blocks={MODEL_NUM_RES_BLOCKS}, hidden={MODEL_NUM_HIDDEN})…")
@@ -255,12 +277,25 @@ def main():
     metrics["predict_ms"] = bench_model_predict(model, game)
 
     for n in MCTS_SIM_COUNTS:
-        print(f"Benchmarking MCTS search ({n} sims)…")
+        print(f"Benchmarking MCTS search ({n} sims, sequential)…")
         metrics[f"mcts_search_{n}_sims_ms"] = bench_mcts_search(model, game, n)
+
+    if batch_size > 1:
+        for n in MCTS_SIM_COUNTS:
+            print(f"Benchmarking MCTS search ({n} sims, batch_size={batch_size})…")
+            metrics[f"mcts_search_{n}_sims_batch{batch_size}_ms"] = bench_mcts_search(
+                model, game, n, batch_size=batch_size
+            )
 
     print(f"Benchmarking sequential self-play game (max_moves={SELF_PLAY_MAX_MOVES})…")
     metrics["self_play_game_s"] = bench_self_play_game(model, game)
     metrics["est_iteration_s"] = metrics["self_play_game_s"] * NUM_SELF_PLAY_GAMES_EST
+
+    if batch_size > 1:
+        print(f"Benchmarking batched self-play game (batch_size={batch_size}, max_moves={SELF_PLAY_MAX_MOVES})…")
+        metrics[f"self_play_game_batch{batch_size}_s"] = bench_self_play_game(
+            model, game, batch_size=batch_size
+        )
 
     print(f"Benchmarking parallel self-play (1 worker, {PARALLEL_N_GAMES} games)…")
     metrics["parallel_1w_game_s"] = bench_parallel_self_play(model, game, n_workers=1)
@@ -273,7 +308,7 @@ def main():
     record = {
         "timestamp": datetime.utcnow().isoformat() + "Z",
         "label": label,
-        "flags": {"no_tree_reuse": no_tree_reuse, "no_cache": no_cache},
+        "flags": {"no_tree_reuse": no_tree_reuse, "no_cache": no_cache, "batch_size": batch_size},
         "config": {
             "num_res_blocks": MODEL_NUM_RES_BLOCKS,
             "num_hidden": MODEL_NUM_HIDDEN,

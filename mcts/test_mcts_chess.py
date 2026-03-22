@@ -75,6 +75,55 @@ class TestMCTSChessPolicy:
         assert (policy[illegal_mask] == 0).all()
 
 
+class TestBatchedMCTSChess:
+    """Opt 4: batched MCTS inference for chess."""
+
+    def test_batched_policy_sums_to_one(self, game):
+        mcts = MCTS(game, model=None, num_searches=20, batch_size=4)
+        state = game.get_initial_state()
+        policy = mcts.search(state, player=1)
+        assert policy.sum() == pytest.approx(1.0, abs=1e-5)
+
+    def test_batched_policy_zero_on_illegal(self, game):
+        mcts = MCTS(game, model=None, num_searches=20, batch_size=4)
+        state = game.get_initial_state()
+        policy = mcts.search(state, player=1)
+        valid_moves = game.get_valid_moves(state)
+        illegal_mask = (valid_moves == 0)
+        assert (policy[illegal_mask] == 0).all()
+
+    def test_batched_with_model_sums_to_one(self, game, model):
+        mcts = MCTS(game, model=model, num_searches=20, batch_size=4)
+        state = game.get_initial_state()
+        policy = mcts.search(state, player=1)
+        assert policy.sum() == pytest.approx(1.0, abs=1e-5)
+
+    def test_batched_with_model_respects_legality(self, game, model):
+        mcts = MCTS(game, model=model, num_searches=20, batch_size=4)
+        state = game.get_initial_state()
+        policy = mcts.search(state, player=1)
+        valid_moves = game.get_valid_moves(state)
+        illegal_mask = (valid_moves == 0)
+        assert (policy[illegal_mask] == 0).all()
+
+    def test_batch_size_greater_than_num_searches(self, game):
+        mcts = MCTS(game, model=None, num_searches=5, batch_size=32)
+        state = game.get_initial_state()
+        policy = mcts.search(state, player=1)
+        assert policy.sum() == pytest.approx(1.0, abs=1e-5)
+        assert (policy >= 0).all()
+
+    def test_visit_count_invariant(self, game):
+        """Total visit counts across children should equal num_searches (VL fully undone)."""
+        num_searches = 20
+        mcts = MCTS(game, model=None, num_searches=num_searches, batch_size=4)
+        state = game.get_initial_state()
+        mcts.search(state, player=1)
+        root = mcts._root
+        total_child_visits = sum(c.visit_count for c in root.children.values())
+        assert total_child_visits == num_searches
+
+
 class TestMCTSChessTerminal:
     def test_search_does_not_crash_on_checkmate(self, game, mcts_no_model):
         """Scholar's mate: White is checkmated, search from that position."""

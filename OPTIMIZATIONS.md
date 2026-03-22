@@ -16,7 +16,7 @@ This document tracks five speedups designed to make chess training feasible on a
 | 1 | MCTS tree reuse | ~2× | Low | Implemented |
 | 2 | Transposition table | ~1.5–3× | Low-medium | Removed (negative impact on chess; superseded by Opt 4 batch deduplication) |
 | 3 | Parallel self-play | ~8× (M1 cores) | Medium | Implemented |
-| 4 | Batched MCTS inference | ~10–30× | High | Not implemented |
+| 4 | Batched MCTS inference | ~10–30× | High | Implemented |
 | 5 | MPS for training step | ~small | Trivial | Partially done |
 
 ---
@@ -81,25 +81,33 @@ less than 8× due to process startup overhead and memory bandwidth limits.
 
 ---
 
-## Opt 4 — Batched MCTS Inference (~10–30×, Not implemented)
+## Opt 4 — Batched MCTS Inference (~10–30×)
 
 **Problem:** Even with Opt 3, each MCTS simulation within a game calls `model.predict()`
 with batch_size=1. GPU/MPS utilization is extremely low.
 
-**Idea:** Collect leaf nodes from multiple simulations into a batch, evaluate them all in
-one `model.forward()` call, then backpropagate all values. This requires restructuring the
-MCTS inner loop.
+**Idea:** Collect leaf nodes from `batch_size` simulations and evaluate them all in one
+`model.forward()` call, then backpropagate all values.
 
 **Approach:**
-1. Run selection for all `num_searches` simulations in parallel.
-2. Collect all unexpanded leaf nodes into a batch.
-3. Evaluate the batch in a single `model.forward()`.
-4. Expand all leaves, then backpropagate all values.
-5. Use "virtual loss" to discourage multiple simulations from selecting the same path.
+1. Run selection for `batch_size` simulations applying virtual loss at each step so
+   different simulations explore different paths.
+2. Collect all unique unexpanded non-terminal leaves into a batch.
+3. Evaluate the batch in a single `model.forward()` call via `_evaluate_batch()`.
+4. Expand all unique leaves, undo virtual loss, then backpropagate real values.
 
-**Complexity:** High — requires a significant rewrite of the MCTS inner loop. The virtual
-loss mechanism is subtle to implement correctly. Batching also changes the statistical
-properties of the search slightly.
+**Changes:**
+- `mcts/mcts.py`: `Node` gets `apply_virtual_loss()` / `undo_virtual_loss()` methods.
+  `MCTS.__init__` adds `batch_size=1` (default 1 = no change). New `_evaluate_batch()`
+  method runs a single batched forward pass. New `_run_one()` extracts the sequential
+  simulation body. New `_run_batch()` implements three-phase batched simulation.
+  `search()` dispatches to sequential or batched path.
+- `benchmark.py`: `--batch-size=N` flag runs batched timing rows alongside sequential ones.
+
+**Usage:** Pass `batch_size=N` to `MCTS(...)`. Recommended N: 16–64.
+
+**Known limitation:** Opt 3 (parallel self-play) + Opt 4 are not combined. Workers in
+`parallel_self_play` use the default `batch_size=1`.
 
 ---
 

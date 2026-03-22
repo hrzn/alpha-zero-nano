@@ -3,11 +3,16 @@
 Optimizations implemented:
   Opt 1 — Tree reuse: advance_root() promotes a child to root so the next
            search() call reuses its visit counts instead of starting fresh.
+  Opt 4 — Batched inference: _run_batch() collects batch_size leaf nodes and
+           evaluates them in a single model.forward() call with virtual loss.
 """
 
 import math
 
 import numpy as np
+import torch
+
+_VIRTUAL_LOSS = 1
 
 
 class Node:
@@ -78,13 +83,26 @@ class Node:
         if self.parent is not None:
             self.parent.backpropagate(-value)
 
+    def apply_virtual_loss(self, vl=_VIRTUAL_LOSS):
+        self.visit_count += vl
+        self.value_sum += vl          # positive → parent sees Q = -vl/vl = -1.0
+        if self.parent is not None:
+            self.parent.apply_virtual_loss(vl)
+
+    def undo_virtual_loss(self, vl=_VIRTUAL_LOSS):
+        self.visit_count -= vl
+        self.value_sum -= vl
+        if self.parent is not None:
+            self.parent.undo_virtual_loss(vl)
+
 
 class MCTS:
-    def __init__(self, game, model=None, num_searches=100, c_puct=1.0):
+    def __init__(self, game, model=None, num_searches=100, c_puct=1.0, batch_size=1):
         self.game = game
         self.model = model
         self.num_searches = num_searches
         self.c_puct = c_puct
+        self.batch_size = batch_size
         self._root = None  # Opt 1: tree reuse
 
     def _evaluate(self, state, player):
@@ -92,6 +110,26 @@ class MCTS:
         if self.model is None:
             return np.ones(self.game.action_size) / self.game.action_size, 0.0
         return self.model.predict(state, player)
+
+    def _evaluate_batch(self, leaves):
+        """Evaluate a list of (state, player) tuples in a single forward pass.
+
+        Returns a list of (policy_np, value_float) in the same order as leaves.
+        """
+        if self.model is None:
+            uniform = np.ones(self.game.action_size) / self.game.action_size
+            return [(uniform, 0.0) for _ in leaves]
+        self.model.eval()
+        device = next(self.model.parameters()).device
+        x = torch.tensor(
+            np.stack([self.game.encode_state(s, p) for s, p in leaves]),
+            dtype=torch.float32,
+        ).to(device)
+        with torch.no_grad():
+            policy_logits, values = self.model(x)
+        policies = torch.softmax(policy_logits, dim=1).cpu().numpy()
+        values_np = values.cpu().numpy()
+        return [(policies[i], float(values_np[i])) for i in range(len(leaves))]
 
     def advance_root(self, action):
         """Opt 1: promote the child at action to be the new root.
@@ -106,6 +144,83 @@ class MCTS:
         else:
             self._root = None
 
+    def _run_one(self, root):
+        """Run a single MCTS simulation from root (sequential path)."""
+        node = root
+
+        # Select: traverse tree until we find an unexpanded node
+        while node.is_expanded():
+            _, node = node.select(self.c_puct)
+
+        # Check if this node is terminal
+        value, terminated = self.game.get_value_and_terminated(
+            node.state, node.action_taken
+        )
+
+        if terminated:
+            # Value is from the perspective of the player who just moved
+            # (the parent's player), but we need it from this node's
+            # perspective for backpropagation
+            value = -value
+        else:
+            # Expand and evaluate
+            policy, value = self._evaluate(node.state, node.player)
+            node.expand(policy)
+
+        # Backpropagate
+        node.backpropagate(value)
+
+    def _run_batch(self, root, batch_size):
+        """Run batch_size simulations with virtual loss and batched evaluation.
+
+        Phase 1: Select leaf nodes for each sim, applying virtual loss.
+        Phase 2: Batch-evaluate unique unexpanded non-terminal leaves.
+        Phase 3: Undo virtual loss and backpropagate real values.
+        """
+        # Phase 1 — Selection with virtual loss
+        sim_results = []  # list of (leaf_node, terminated, value)
+        for _ in range(batch_size):
+            node = root
+            while node.is_expanded():
+                _, node = node.select(self.c_puct)
+            # Apply VL from leaf; the recursive call propagates it up to root
+            node.apply_virtual_loss()
+
+            value, terminated = self.game.get_value_and_terminated(
+                node.state, node.action_taken
+            )
+            if terminated:
+                value = -value
+
+            sim_results.append((node, terminated, value))
+
+        # Phase 2 — Batch evaluation of unique unexpanded non-terminal leaves
+        unique_nodes = {}  # id(node) → node
+        for node, terminated, _ in sim_results:
+            if not terminated and not node.is_expanded():
+                unique_nodes[id(node)] = node
+
+        node_eval_map = {}
+        if unique_nodes:
+            node_list = list(unique_nodes.values())
+            leaves = [(n.state, n.player) for n in node_list]
+            eval_results = self._evaluate_batch(leaves)
+            node_eval_map = {
+                id(node_list[i]): eval_results[i] for i in range(len(node_list))
+            }
+
+            for node_id, node in unique_nodes.items():
+                if not node.is_expanded():
+                    policy, _ = node_eval_map[node_id]
+                    node.expand(policy)
+
+        # Phase 3 — Undo virtual loss + backpropagate
+        for node, terminated, value in sim_results:
+            node.undo_virtual_loss()
+            if not terminated and id(node) in node_eval_map:
+                _, value = node_eval_map[id(node)]
+            node.backpropagate(value)
+
     def search(self, state, player):
         """Run MCTS from the given state and return a policy vector."""
         # Opt 1: reuse existing root if available (set via advance_root),
@@ -118,35 +233,25 @@ class MCTS:
         else:
             root = self._root
 
-        for _ in range(self.num_searches):
-            node = root
-
-            # Select: traverse tree until we find an unexpanded node
-            while node.is_expanded():
-                _, node = node.select(self.c_puct)
-
-            # Check if this node is terminal
-            value, terminated = self.game.get_value_and_terminated(
-                node.state, node.action_taken
-            )
-
-            if terminated:
-                # Value is from the perspective of the player who just moved
-                # (the parent's player), but we need it from this node's
-                # perspective for backpropagation
-                value = -value
-            else:
-                # Expand and evaluate
-                policy, value = self._evaluate(node.state, node.player)
-                node.expand(policy)
-
-            # Backpropagate
-            node.backpropagate(value)
+        if self.batch_size == 1:
+            for _ in range(self.num_searches):
+                self._run_one(root)
+        else:
+            sims_done = 0
+            while sims_done < self.num_searches:
+                this_batch = min(self.batch_size, self.num_searches - sims_done)
+                if this_batch == 1:
+                    self._run_one(root)
+                else:
+                    self._run_batch(root, this_batch)
+                sims_done += this_batch
 
         # Build policy from visit counts
         action_probs = np.zeros(self.game.action_size)
         for action, child in root.children.items():
             action_probs[action] = child.visit_count
 
-        action_probs = action_probs / action_probs.sum()
+        total = action_probs.sum()
+        if total > 0:
+            action_probs = action_probs / total
         return action_probs
