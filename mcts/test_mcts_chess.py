@@ -51,9 +51,9 @@ class TestMCTSChessPolicy:
         """Illegal squares should have zero probability after a few moves."""
         state = game.get_initial_state()
         # Make a few moves to create a non-trivial position
-        state = game.update_state(state, game.uci_to_action("e2e4"), 1)
-        state = game.update_state(state, game.uci_to_action("e7e5"), -1)
-        state = game.update_state(state, game.uci_to_action("d2d4"), 1)
+        state = game.update_state(state, game.uci_to_action("e2e4", player=1), 1)
+        state = game.update_state(state, game.uci_to_action("e7e5", player=-1), -1)
+        state = game.update_state(state, game.uci_to_action("d2d4", player=1), 1)
 
         policy = mcts_no_model.search(state, player=1)
         valid_moves = game.get_valid_moves(state)

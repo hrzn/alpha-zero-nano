@@ -18,6 +18,7 @@ import argparse
 import collections
 import glob
 import json
+import multiprocessing
 import os
 import time
 from datetime import datetime
@@ -29,7 +30,7 @@ import torch.optim as optim
 from chess_game.chess_game import ChessGame
 from mcts.mcts import MCTS
 from model.model import ResNet
-from train.train import parallel_self_play, self_play, train_step
+from train.train import _worker_self_play, self_play, train_step
 
 # ── Presets ───────────────────────────────────────────────────────────────────
 
@@ -39,22 +40,25 @@ PRESETS = {
         # Model
         "num_res_blocks": 3,
         "num_hidden": 64,
-        # MCTS — mcts_batch_size only active when n_workers=1 (sequential self-play)
-        "num_searches": 10,
+        # MCTS
+        "num_searches": 100,
         "mcts_batch_size": 5,
         "c_puct": 1.0,
+        "dirichlet_alpha": 0.3,
+        "dirichlet_epsilon": 0.25,
         # Self-play
         "num_self_play_games": 2,
         "n_workers": 1,  # sequential; enables mcts_batch_size (Opt 4)
         "max_moves": 30,
-        # Training
-        "num_epochs": 2,
+        "temp_threshold": 8,  # argmax after move 8
+        # Training — each epoch = one full pass over the replay buffer
+        "num_epochs": 3,
         "train_batch_size": 32,
         "lr": 1e-3,
         "lr_milestones": [],  # iterations at which to halve LR
         "replay_buffer_size": 1_000,
         # Loop
-        "num_iterations": 10,
+        "num_iterations": 50,
         "checkpoint_interval": 2,
         "eval_interval": 2,
         "eval_games": 4,
@@ -64,12 +68,16 @@ PRESETS = {
         "_description": "Small model — first non-random play expected by iter 20-30",
         "num_res_blocks": 5,
         "num_hidden": 128,
-        "num_searches": 100,
-        "mcts_batch_size": 20,  # 5 batches/worker — Opts 3+4 combined
+        "num_searches": 200,
+        "mcts_batch_size": 40,  # 5 batches/worker — Opts 3+4 combined
         "c_puct": 1.0,
+        "dirichlet_alpha": 0.3,
+        "dirichlet_epsilon": 0.25,
         "num_self_play_games": 20,
         "n_workers": 4,
         "max_moves": 100,
+        "temp_threshold": 20,  # argmax after move 20
+        # Training — each epoch = one full pass over the replay buffer
         "num_epochs": 4,
         "train_batch_size": 256,
         "lr": 1e-3,
@@ -79,18 +87,22 @@ PRESETS = {
         "checkpoint_interval": 5,
         "eval_interval": 5,
         "eval_games": 10,
-        "eval_searches": 50,
+        "eval_searches": 100,
     },
     "M": {
         "_description": "Full run — hours on M1 + MPS; target: non-trivial chess play",
         "num_res_blocks": 10,
         "num_hidden": 256,
-        "num_searches": 200,
-        "mcts_batch_size": 40,  # 5 batches/worker — Opts 3+4 combined
+        "num_searches": 400,
+        "mcts_batch_size": 80,  # 5 batches/worker — Opts 3+4 combined
         "c_puct": 1.5,
+        "dirichlet_alpha": 0.3,
+        "dirichlet_epsilon": 0.25,
         "num_self_play_games": 50,
         "n_workers": 8,
         "max_moves": 200,
+        "temp_threshold": 30,  # argmax after move 30
+        # Training — each epoch = one full pass over the replay buffer
         "num_epochs": 5,
         "train_batch_size": 512,
         "lr": 1e-3,
@@ -100,7 +112,7 @@ PRESETS = {
         "checkpoint_interval": 5,
         "eval_interval": 10,
         "eval_games": 20,
-        "eval_searches": 100,
+        "eval_searches": 200,
     },
 }
 
@@ -320,16 +332,25 @@ def run_training(preset_name="S", device=None, checkpoint_dir=None):
     print(
         f"  Model  : {args['num_res_blocks']} res_blocks × {args['num_hidden']} hidden"
     )
-    print(f"  MCTS   : {args['num_searches']} searches  c_puct={args['c_puct']}")
+    print(
+        f"  MCTS   : {args['num_searches']} searches  c_puct={args['c_puct']}"
+        f"  dir_α={args['dirichlet_alpha']}  dir_ε={args['dirichlet_epsilon']}"
+    )
     if args["n_workers"] > 1:
         sp_mode = f"{args['n_workers']} workers  batch_size={args['mcts_batch_size']} (Opts 3+4)"
     else:
         sp_mode = f"sequential  batch_size={args['mcts_batch_size']} (Opt 4)"
-    print(
-        f"  Play   : {args['num_self_play_games']} games/iter  {sp_mode}  max_moves={args['max_moves']}"
+    temp_str = (
+        f"  temp→0 after move {args['temp_threshold']}"
+        if args.get("temp_threshold")
+        else ""
     )
     print(
-        f"  Train  : {args['num_epochs']} epochs/iter  lr={args['lr']}  buf≤{args['replay_buffer_size']:,}"
+        f"  Play   : {args['num_self_play_games']} games/iter  {sp_mode}  max_moves={args['max_moves']}{temp_str}"
+    )
+    print(f"  Value bootstrap at move cap (no flat-draw signal)")
+    print(
+        f"  Train  : {args['num_epochs']} epochs/iter (full buffer pass)  lr={args['lr']}  buf≤{args['replay_buffer_size']:,}"
     )
     milestones = args["lr_milestones"]
     lr_str = f"  LR ×0.5 at iters {milestones}" if milestones else "  LR: constant"
@@ -384,6 +405,8 @@ def run_training(preset_name="S", device=None, checkpoint_dir=None):
         num_searches=args["num_searches"],
         c_puct=args["c_puct"],
         batch_size=args["mcts_batch_size"],
+        dirichlet_alpha=args["dirichlet_alpha"],
+        dirichlet_epsilon=args["dirichlet_epsilon"],
     )
 
     replay_buffer = collections.deque(maxlen=args["replay_buffer_size"])
@@ -407,28 +430,78 @@ def run_training(preset_name="S", device=None, checkpoint_dir=None):
 
         # ── Self-play ─────────────────────────────────────────────────────
         t0 = time.perf_counter()
-        if args["n_workers"] > 1:
-            new_examples = parallel_self_play(
-                game,
-                mcts,
-                n_games=args["num_self_play_games"],
-                max_moves=args["max_moves"],
-                n_workers=args["n_workers"],
-            )
-        else:
-            mcts._root = None
-            new_examples = []
-            for _ in range(args["num_self_play_games"]):
-                new_examples += self_play(game, mcts, max_moves=args["max_moves"])
+        n_games = args["num_self_play_games"]
+        sp_task = (
+            type(game),
+            {k: v.cpu() for k, v in model.state_dict().items()},
+            model.num_res_blocks,
+            model.num_hidden,
+            mcts.num_searches,
+            mcts.c_puct,
+            mcts.batch_size,
+            mcts.dirichlet_alpha,
+            mcts.dirichlet_epsilon,
+            args.get("temp_threshold"),
+            args["max_moves"],
+        )
+        ng_w = len(str(n_games))  # width for game counter
 
+        all_game_examples = []
+        move_counts = []
+
+        def _sp_progress():
+            n_done = len(move_counts)
+            elapsed = time.perf_counter() - t0
+            avg = f"{sum(move_counts)/n_done:.0f}" if n_done else "?"
+            bar_w = 14
+            filled = int(bar_w * n_done / n_games)
+            bar = "█" * filled + "░" * (bar_w - filled)
+            print(
+                f"\r  Self-play  [{bar}] {n_done:{ng_w}}/{n_games}"
+                f"  avg {avg} moves  {_fmt_time(elapsed):>6}   ",
+                end="",
+                flush=True,
+            )
+
+        if args["n_workers"] > 1:
+            ctx = multiprocessing.get_context("spawn")
+            with ctx.Pool(args["n_workers"]) as pool:
+                for examples in pool.imap_unordered(
+                    _worker_self_play, [sp_task] * n_games
+                ):
+                    all_game_examples.append(examples)
+                    move_counts.append(len(examples))
+                    _sp_progress()
+        else:
+            for _ in range(n_games):
+                examples = self_play(
+                    game,
+                    mcts,
+                    max_moves=args["max_moves"],
+                    temp_threshold=args.get("temp_threshold"),
+                )
+                all_game_examples.append(examples)
+                move_counts.append(len(examples))
+                _sp_progress()
+
+        new_examples = [ex for g in all_game_examples for ex in g]
         sp_time = time.perf_counter() - t0
         timer.record("self_play", sp_time)
         replay_buffer.extend(new_examples)
         buf_size = len(replay_buffer)
+
+        mc = sorted(move_counts)
+        mc_mean = sum(mc) / len(mc)
+        capped = sum(1 for m in move_counts if m >= args["max_moves"])
+        cap_str = f"  {capped}/{n_games} capped" if capped else ""
         print(
-            f"  Self-play   {args['num_self_play_games']} games"
+            f"\r  Self-play   {n_games} games"
             f"  +{len(new_examples):,} ex  buf {buf_size:,}/{args['replay_buffer_size']:,}"
-            f"  [{_fmt_time(sp_time)}]"
+            f"  [{_fmt_time(sp_time)}]          "
+        )
+        print(
+            f"  moves: {mc[0]}–{mc[-1]}"
+            f"  median {mc[len(mc)//2]}  mean {mc_mean:.0f}{cap_str}"
         )
 
         # ── Training ──────────────────────────────────────────────────────
@@ -438,16 +511,36 @@ def run_training(preset_name="S", device=None, checkpoint_dir=None):
         policies = np.array([e[1] for e in buf_list], dtype=np.float32)
         outcomes = np.array([e[2] for e in buf_list], dtype=np.float32)
 
+        model.train()
         epoch_losses = []
-        bsz = min(args["train_batch_size"], buf_size)
-        for _ in range(args["num_epochs"]):
-            idx = np.random.choice(buf_size, size=bsz, replace=False)
-            loss = train_step(
-                model, optimizer, (encoded_states[idx], policies[idx], outcomes[idx])
+        bsz = args["train_batch_size"]
+        n_steps = 0
+        n_epochs = args["num_epochs"]
+        for epoch_i in range(n_epochs):
+            perm = np.random.permutation(buf_size)
+            ep_losses = []
+            for start in range(0, buf_size, bsz):
+                idx = perm[start : start + bsz]
+                if len(idx) < max(1, bsz // 2):
+                    continue  # skip tiny tail batch
+                loss = train_step(
+                    model,
+                    optimizer,
+                    (encoded_states[idx], policies[idx], outcomes[idx]),
+                )
+                ep_losses.append(loss)
+                epoch_losses.append(loss)
+                n_steps += 1
+            ep_loss = sum(ep_losses) / len(ep_losses) if ep_losses else 0.0
+            print(
+                f"\r  Training    epoch {epoch_i+1}/{n_epochs}"
+                f"  step {n_steps}  loss={ep_loss:.4f}"
+                f"  {_fmt_time(time.perf_counter() - t0):>6}   ",
+                end="",
+                flush=True,
             )
-            epoch_losses.append(loss)
 
-        avg_loss = sum(epoch_losses) / len(epoch_losses)
+        avg_loss = sum(epoch_losses) / len(epoch_losses) if epoch_losses else 0.0
         loss_history.append(avg_loss)
         train_time = time.perf_counter() - t0
         timer.record("train", train_time)
@@ -457,9 +550,9 @@ def run_training(preset_name="S", device=None, checkpoint_dir=None):
             delta = loss_history[-1] - loss_history[-2]
             loss_trend = " ↓" if delta < -0.005 else (" ↑" if delta > 0.005 else " →")
         print(
-            f"  Training    {args['num_epochs']} epochs  batch={bsz}"
+            f"\r  Training    {n_epochs} epochs  {n_steps} steps  batch={bsz}"
             f"  loss={avg_loss:.4f}{loss_trend}"
-            f"  [{_fmt_time(train_time)}]"
+            f"  [{_fmt_time(train_time)}]          "
         )
 
         # ── Iteration summary ─────────────────────────────────────────────
@@ -520,12 +613,16 @@ def run_training(preset_name="S", device=None, checkpoint_dir=None):
                 if os.path.exists(eval_hist_path):
                     with open(eval_hist_path) as f:
                         eval_hist = json.load(f)
-                eval_hist.append({
-                    "iteration": iter_num,
-                    "baseline_iter": baseline_iter,
-                    "wins": w, "draws": d, "losses": l,
-                    "win_rate": wr,
-                })
+                eval_hist.append(
+                    {
+                        "iteration": iter_num,
+                        "baseline_iter": baseline_iter,
+                        "wins": w,
+                        "draws": d,
+                        "losses": l,
+                        "win_rate": wr,
+                    }
+                )
                 with open(eval_hist_path, "w") as f:
                     json.dump(eval_hist, f, indent=2)
 

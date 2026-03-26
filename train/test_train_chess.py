@@ -51,10 +51,11 @@ class TestSelfPlayChess:
             assert (policy >= 0).all()
 
     def test_outcomes_are_valid(self, game, mcts):
-        """Outcomes must be in {-1, 0, 1}."""
+        """Outcomes must be floats in [-1, 1] (may be fractional due to value bootstrapping at max_moves)."""
         examples = self_play(game, mcts, max_moves=10)
         for _, _, outcome in examples:
-            assert outcome in {-1.0, 0.0, 1.0}
+            assert isinstance(outcome, float)
+            assert -1.0 <= outcome <= 1.0
 
     def test_game_respects_max_moves(self, game, mcts):
         """With max_moves=N, the game produces at most N examples."""

@@ -97,13 +97,39 @@ class Node:
 
 
 class MCTS:
-    def __init__(self, game, model=None, num_searches=100, c_puct=1.0, batch_size=1):
+    def __init__(
+        self,
+        game,
+        model=None,
+        num_searches=100,
+        c_puct=1.0,
+        batch_size=1,
+        dirichlet_alpha=0.0,
+        dirichlet_epsilon=0.25,
+    ):
         self.game = game
         self.model = model
         self.num_searches = num_searches
         self.c_puct = c_puct
         self.batch_size = batch_size
+        self.dirichlet_alpha = dirichlet_alpha
+        self.dirichlet_epsilon = dirichlet_epsilon
         self._root = None  # Opt 1: tree reuse
+
+    def _apply_dirichlet_noise(self, root):
+        """Mix Dirichlet noise into the root children's priors (exploration during self-play).
+
+        Called at the start of every search() so each move sees fresh noise.
+        No-op when dirichlet_alpha == 0 (default) or root has no children.
+        """
+        if self.dirichlet_alpha <= 0 or not root.children:
+            return
+        actions = list(root.children.keys())
+        noise = np.random.dirichlet([self.dirichlet_alpha] * len(actions))
+        eps = self.dirichlet_epsilon
+        for action, eta in zip(actions, noise):
+            child = root.children[action]
+            child.prior = (1 - eps) * child.prior + eps * eta
 
     def _evaluate(self, state, player):
         """Get policy and value from the model, or use defaults if no model."""
@@ -232,6 +258,8 @@ class MCTS:
             self._root = root
         else:
             root = self._root
+
+        self._apply_dirichlet_noise(root)
 
         if self.batch_size == 1:
             for _ in range(self.num_searches):

@@ -15,16 +15,20 @@ import torch.optim as optim
 from mcts.mcts import MCTS
 
 
-def self_play(game, mcts: MCTS, max_moves=None):
+def self_play(game, mcts: MCTS, max_moves=None, temp_threshold=None):
     """Play one game via MCTS+model and return training examples.
 
     Returns a list of (encoded_state, policy, outcome) tuples where:
     - encoded_state: (num_channels, rows, cols) float32 array from the acting player's perspective
     - policy: (action_size,) float32 array of MCTS visit-count probabilities
-    - outcome: float in {-1, 0, 1} from the acting player's perspective
+    - outcome: float in [-1, 1] from the acting player's perspective
 
-    max_moves: if set, the game is declared a draw after this many moves.
-               Useful for chess where games can be very long early in training.
+    max_moves: if set, the game is terminated after this many moves.  Uses the
+               model's value estimate of the final position (value bootstrapping)
+               rather than declaring a flat draw — this provides learning signal
+               even when games don't terminate naturally.
+    temp_threshold: if set, use proportional sampling (temperature=1) for the
+                    first temp_threshold moves, then play greedily (argmax).
     """
     mcts._root = None  # each game starts with a fresh tree (Opt 1: reuse is within a game)
     examples = []  # (encoded_state, policy, player)
@@ -37,25 +41,30 @@ def self_play(game, mcts: MCTS, max_moves=None):
         encoded_state = game.encode_state(state, player)
         examples.append((encoded_state, policy, player))
 
-        action = np.random.choice(game.action_size, p=policy)
+        # Temperature annealing: sample proportionally early, argmax later
+        if temp_threshold is not None and move_count >= temp_threshold:
+            action = int(np.argmax(policy))
+        else:
+            action = np.random.choice(game.action_size, p=policy)
         mcts.advance_root(action)  # Opt 1: tree reuse — promote child to root
         state = game.update_state(state, action, player)
         move_count += 1
 
         value, terminated = game.get_value_and_terminated(state, action)
         if not terminated and max_moves is not None and move_count >= max_moves:
-            value, terminated = 0.0, True  # declare draw
+            # Value bootstrap: use model's evaluation instead of declaring a
+            # flat draw.  Evaluate from the next-to-move player's perspective,
+            # then negate to match the convention (value from last mover's POV).
+            _, bootstrap_v = mcts._evaluate(state, game.get_opponent(player))
+            value = -float(bootstrap_v)
+            terminated = True
 
         if terminated:
-            # Assign outcomes: value=1 means the player who just moved won
+            # Assign outcomes from each acting player's perspective.
+            # value is from `player`'s (last mover's) POV; negate for opponent.
             training_examples = []
             for enc_state, pol, acting_player in examples:
-                if value == 0:
-                    outcome = 0.0
-                elif acting_player == player:
-                    outcome = 1.0
-                else:
-                    outcome = -1.0
+                outcome = float(value) if acting_player == player else float(-value)
                 training_examples.append((enc_state, pol, outcome))
             return training_examples
 
@@ -71,16 +80,24 @@ def _worker_self_play(task):
     from model.model import ResNet
     from mcts.mcts import MCTS as _MCTS
 
-    game_cls, state_dict_cpu, num_res_blocks, num_hidden, num_searches, c_puct, batch_size, max_moves = task
+    game_cls, state_dict_cpu, num_res_blocks, num_hidden, num_searches, c_puct, batch_size, dirichlet_alpha, dirichlet_epsilon, temp_threshold, max_moves = task
     game = game_cls()
     model = ResNet(game, num_res_blocks=num_res_blocks, num_hidden=num_hidden)
     model.load_state_dict(state_dict_cpu)
     model.eval()
-    mcts = _MCTS(game, model=model, num_searches=num_searches, c_puct=c_puct, batch_size=batch_size)
-    return self_play(game, mcts, max_moves=max_moves)
+    mcts = _MCTS(
+        game,
+        model=model,
+        num_searches=num_searches,
+        c_puct=c_puct,
+        batch_size=batch_size,
+        dirichlet_alpha=dirichlet_alpha,
+        dirichlet_epsilon=dirichlet_epsilon,
+    )
+    return self_play(game, mcts, max_moves=max_moves, temp_threshold=temp_threshold)
 
 
-def parallel_self_play(game, mcts: MCTS, n_games, max_moves=None, n_workers=4):
+def parallel_self_play(game, mcts: MCTS, n_games, max_moves=None, temp_threshold=None, n_workers=4):
     """Play n_games in parallel using multiprocessing (Opt 3).
 
     Each worker receives the model weights (not the model object) and creates
@@ -91,6 +108,7 @@ def parallel_self_play(game, mcts: MCTS, n_games, max_moves=None, n_workers=4):
         mcts: MCTS instance with a model attached
         n_games: total number of self-play games to run
         max_moves: passed to self_play in each worker
+        temp_threshold: passed to self_play in each worker
         n_workers: number of parallel worker processes
 
     Returns:
@@ -111,6 +129,9 @@ def parallel_self_play(game, mcts: MCTS, n_games, max_moves=None, n_workers=4):
         mcts.num_searches,
         mcts.c_puct,
         mcts.batch_size,
+        mcts.dirichlet_alpha,
+        mcts.dirichlet_epsilon,
+        temp_threshold,
         max_moves,
     )
     tasks = [task] * n_games

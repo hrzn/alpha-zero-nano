@@ -36,10 +36,15 @@ class ChessGame:
         return new_state
 
     def get_valid_moves(self, state: chess.Board) -> np.ndarray:
-        """Return a binary mask of shape (action_size,) for legal moves."""
+        """Return a binary mask of shape (action_size,) for legal moves.
+
+        Actions are encoded in the current player's spatial frame (flipped
+        for black) to match encode_state.
+        """
         mask = np.zeros(self.action_size, dtype=np.uint8)
+        flip = (state.turn == chess.BLACK)
         for move in state.legal_moves:
-            mask[self._move_to_action(move)] = 1
+            mask[self._move_to_action(move, flip=flip)] = 1
         return mask
 
     def get_value_and_terminated(self, state: chess.Board, action) -> tuple[float, bool]:
@@ -70,12 +75,26 @@ class ChessGame:
     # Action encoding helpers
     # ------------------------------------------------------------------
 
-    def _move_to_action(self, move: chess.Move) -> int:
-        return move.from_square * 64 + move.to_square
+    @staticmethod
+    def _flip_sq(sq: int) -> int:
+        """Flip rank: a1↔a8, e2↔e7, etc.  Used so that black's actions
+        are in the same spatially-flipped frame as encode_state."""
+        return sq ^ 56
+
+    def _move_to_action(self, move: chess.Move, flip: bool = False) -> int:
+        from_sq = move.from_square
+        to_sq = move.to_square
+        if flip:
+            from_sq = self._flip_sq(from_sq)
+            to_sq = self._flip_sq(to_sq)
+        return from_sq * 64 + to_sq
 
     def _action_to_move(self, state: chess.Board, action: int) -> chess.Move:
         from_sq = action // 64
         to_sq = action % 64
+        if state.turn == chess.BLACK:
+            from_sq = self._flip_sq(from_sq)
+            to_sq = self._flip_sq(to_sq)
         move = chess.Move(from_sq, to_sq)
         # Promote to queen if this is a pawn reaching the back rank
         piece = state.piece_at(from_sq)
@@ -137,13 +156,23 @@ class ChessGame:
 
         return encoded
 
-    def uci_to_action(self, uci: str) -> int:
-        """Convert a UCI string (e.g. 'e2e4') to an action integer."""
-        move = chess.Move.from_uci(uci)
-        return self._move_to_action(move)
+    def uci_to_action(self, uci: str, player: int = 1) -> int:
+        """Convert a UCI string (e.g. 'e2e4') to an action integer.
 
-    def action_to_uci(self, action: int) -> str:
-        """Convert an action integer to a UCI string."""
+        player: 1 (white) or -1 (black).  Actions are flipped for black
+        to match the encoding frame.
+        """
+        move = chess.Move.from_uci(uci)
+        return self._move_to_action(move, flip=(player == -1))
+
+    def action_to_uci(self, action: int, player: int = 1) -> str:
+        """Convert an action integer to a UCI string.
+
+        player: 1 (white) or -1 (black).  Un-flips for black.
+        """
         from_sq = action // 64
         to_sq = action % 64
+        if player == -1:
+            from_sq = self._flip_sq(from_sq)
+            to_sq = self._flip_sq(to_sq)
         return chess.Move(from_sq, to_sq).uci()
