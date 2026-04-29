@@ -1,15 +1,21 @@
-"""Standalone chess training script with preset configurations.
+"""Standalone training script with preset configurations.
 
-Three presets:
+Presets (chess):
   XS — tiny model, for debugging; ~10s/iter, no GPU needed
   S  — small model; first signs of non-random play expected by iter 20-30
-  L  — full training run; hours on M1 + MPS; target: non-trivial chess play
+  M  — full training run; hours on M1 + MPS; target: non-trivial chess play
 
-Usage:
-    uv run python train/run_training.py                         # S preset, auto device
-    uv run python train/run_training.py --preset XS
-    uv run python train/run_training.py --preset L --device mps
-    uv run python train/run_training.py --preset S --dir runs/my_run
+Presets (connect 4):
+  C4 — small model; should clearly beat random within a few dozen iterations
+
+Usage (run as a module from the project root, not as a script — running it
+as `python train/run_training.py` shadows the `train` package with the
+script's directory and breaks the `from train.train import …` import):
+    uv run python -m train.run_training                         # S preset, auto device
+    uv run python -m train.run_training --preset XS
+    uv run python -m train.run_training --preset M --device mps
+    uv run python -m train.run_training --preset C4
+    uv run python -m train.run_training --preset S --dir runs/my_run
 
 Resumes automatically from the latest checkpoint in --dir.
 """
@@ -28,15 +34,23 @@ import torch
 import torch.optim as optim
 
 from chess_game.chess_game import ChessGame
+from connect4 import Connect4
 from mcts.mcts import MCTS
 from model.model import ResNet
 from train.train import _worker_self_play, self_play, train_step
+
+# Game registry: preset's "game" field → (class, display name)
+_GAMES = {
+    "chess": (ChessGame, "Chess"),
+    "connect4": (Connect4, "Connect 4"),
+}
 
 # ── Presets ───────────────────────────────────────────────────────────────────
 
 PRESETS = {
     "XS": {
         "_description": "Tiny model — verify pipeline end-to-end (~10s/iter)",
+        "game": "chess",
         # Model
         "num_res_blocks": 3,
         "num_hidden": 64,
@@ -66,6 +80,7 @@ PRESETS = {
     },
     "S": {
         "_description": "Small model — first non-random play expected by iter 20-30",
+        "game": "chess",
         "num_res_blocks": 5,
         "num_hidden": 128,
         "num_searches": 200,
@@ -91,6 +106,7 @@ PRESETS = {
     },
     "M": {
         "_description": "Full run — hours on M1 + MPS; target: non-trivial chess play",
+        "game": "chess",
         "num_res_blocks": 10,
         "num_hidden": 256,
         "num_searches": 400,
@@ -113,6 +129,31 @@ PRESETS = {
         "eval_interval": 10,
         "eval_games": 20,
         "eval_searches": 200,
+    },
+    "C4": {
+        "_description": "Connect 4 — should clearly beat random within ~30 iters",
+        "game": "connect4",
+        "num_res_blocks": 3,
+        "num_hidden": 64,
+        "num_searches": 100,
+        "mcts_batch_size": 20,
+        "c_puct": 1.0,
+        "dirichlet_alpha": 1.0,  # 7-action space → larger alpha than chess
+        "dirichlet_epsilon": 0.25,
+        "num_self_play_games": 30,
+        "n_workers": 4,
+        "max_moves": 42,  # board size; games end naturally well before this
+        "temp_threshold": 8,
+        "num_epochs": 4,
+        "train_batch_size": 128,
+        "lr": 1e-3,
+        "lr_milestones": [],
+        "replay_buffer_size": 10_000,
+        "num_iterations": 50,
+        "checkpoint_interval": 5,
+        "eval_interval": 5,
+        "eval_games": 20,
+        "eval_searches": 50,
     },
 }
 
@@ -188,13 +229,13 @@ def save_checkpoint(path, iteration, model, optimizer, loss_history, args):
 
 
 def load_latest_checkpoint(checkpoint_dir, game, args):
-    """Scan checkpoint_dir for chess_iter_*.pt and load the highest-numbered one.
+    """Scan checkpoint_dir for <game>_iter_*.pt and load the highest-numbered one.
 
     Returns (model, optimizer, iteration, loss_history).
     If no checkpoint is found, returns (None, None, None, []).
     """
     os.makedirs(checkpoint_dir, exist_ok=True)
-    files = sorted(glob.glob(os.path.join(checkpoint_dir, "chess_iter_*.pt")))
+    files = sorted(glob.glob(os.path.join(checkpoint_dir, f"{_ckpt_prefix(args)}*.pt")))
     if not files:
         return None, None, None, []
 
@@ -219,18 +260,24 @@ def _load_model_at(path, game, args):
     return model
 
 
-def _find_eval_baseline(checkpoint_dir, current_iter, eval_interval):
+def _ckpt_prefix(args):
+    """Checkpoint filename prefix derived from the game name (e.g., 'chess_iter_')."""
+    return f"{args['game']}_iter_"
+
+
+def _find_eval_baseline(checkpoint_dir, current_iter, eval_interval, args):
     """Return the path of the most recent checkpoint at least eval_interval iters behind current.
 
     Returns None if no such checkpoint exists yet.
     """
     target = current_iter - eval_interval
-    files = sorted(glob.glob(os.path.join(checkpoint_dir, "chess_iter_*.pt")))
+    prefix = _ckpt_prefix(args)
+    files = sorted(glob.glob(os.path.join(checkpoint_dir, f"{prefix}*.pt")))
     best = None
     for f in files:
         stem = os.path.basename(f)
         try:
-            it = int(stem[len("chess_iter_") : -len(".pt")])
+            it = int(stem[len(prefix) : -len(".pt")])
         except ValueError:
             continue
         if it <= target:
@@ -322,12 +369,13 @@ def run_training(preset_name="S", device=None, checkpoint_dir=None):
         else:
             device = "cpu"
 
-    game = ChessGame()
+    game_cls, game_display = _GAMES[args["game"]]
+    game = game_cls()
     os.makedirs(checkpoint_dir, exist_ok=True)
 
     # ── Header ───────────────────────────────────────────────────────────────
     print(_hr("═"))
-    print(f"  AlphaZero Chess — {preset_name} preset")
+    print(f"  AlphaZero {game_display} — {preset_name} preset")
     print(f"  {args['_description']}")
     print(
         f"  Model  : {args['num_res_blocks']} res_blocks × {args['num_hidden']} hidden"
@@ -374,7 +422,7 @@ def run_training(preset_name="S", device=None, checkpoint_dir=None):
         loss_history = []
         # Save iter-0 baseline so evaluation has something to compare against
         save_checkpoint(
-            os.path.join(checkpoint_dir, "chess_iter_0000.pt"),
+            os.path.join(checkpoint_dir, f"{_ckpt_prefix(args)}0000.pt"),
             0,
             model,
             optimizer,
@@ -571,7 +619,7 @@ def run_training(preset_name="S", device=None, checkpoint_dir=None):
 
         # ── Checkpoint ────────────────────────────────────────────────────
         if iter_num % args["checkpoint_interval"] == 0:
-            ckpt_path = os.path.join(checkpoint_dir, f"chess_iter_{iter_num:04d}.pt")
+            ckpt_path = os.path.join(checkpoint_dir, f"{_ckpt_prefix(args)}{iter_num:04d}.pt")
             save_checkpoint(ckpt_path, iter_num, model, optimizer, loss_history, args)
             with open(os.path.join(checkpoint_dir, "loss_history.json"), "w") as f:
                 json.dump(loss_history, f)
@@ -580,11 +628,12 @@ def run_training(preset_name="S", device=None, checkpoint_dir=None):
         # ── Evaluation ────────────────────────────────────────────────────
         if iter_num % args["eval_interval"] == 0:
             baseline_path = _find_eval_baseline(
-                checkpoint_dir, iter_num, args["eval_interval"]
+                checkpoint_dir, iter_num, args["eval_interval"], args
             )
             if baseline_path is not None:
+                prefix = _ckpt_prefix(args)
                 baseline_iter = int(
-                    os.path.basename(baseline_path)[len("chess_iter_") : -len(".pt")]
+                    os.path.basename(baseline_path)[len(prefix) : -len(".pt")]
                 )
                 print(
                     f"\n  {_section(f'Eval: iter {iter_num} vs iter {baseline_iter}', char='┄')}"
@@ -652,10 +701,11 @@ def run_training(preset_name="S", device=None, checkpoint_dir=None):
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="AlphaZero Chess training",
+        description="AlphaZero training (game selected by preset)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="\n".join(
-            f"  {name}: {p['_description']}" for name, p in PRESETS.items()
+            f"  {name} [{p['game']}]: {p['_description']}"
+            for name, p in PRESETS.items()
         ),
     )
     parser.add_argument(

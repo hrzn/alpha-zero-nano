@@ -11,7 +11,15 @@ dependencies = [
     "torch>=2.0.0",
     "matplotlib>=3.0.0",
     "chess>=1.11.2",
+    "jupyter>=1.1.1",
 ]
+
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["tictactoe", "chess_game", "connect4", "mcts", "model", "train"]
 
 [dependency-groups]
 dev = [

@@ -19,6 +19,7 @@ def game():
 @pytest.fixture
 def small_args():
     return {
+        "game": "chess",
         "num_res_blocks": 1,
         "num_hidden": 32,
         "num_searches": 5,
