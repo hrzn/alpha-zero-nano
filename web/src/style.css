@@ -1,0 +1,133 @@
+:root {
+  --bg: #0f1115;
+  --panel: #1a1d24;
+  --panel-2: #232730;
+  --fg: #e6e6e6;
+  --fg-dim: #9aa0a6;
+  --accent: #f5b342;
+  --p1: #f06060;
+  --p2: #ffd54a;
+  --grid: #0a0c10;
+  --hint: #2c3140;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  background: var(--bg);
+  color: var(--fg);
+}
+
+main { max-width: 1100px; margin: 0 auto; padding: 24px; }
+
+header h1 { margin: 0 0 4px; font-size: 22px; font-weight: 600; }
+header .sub { margin: 0 0 24px; color: var(--fg-dim); font-size: 14px; }
+
+.play { display: grid; grid-template-columns: minmax(0, 2fr) minmax(220px, 1fr); gap: 24px; }
+@media (max-width: 720px) { .play { grid-template-columns: 1fr; } }
+
+.board-wrap { background: var(--panel); border-radius: 8px; padding: 16px; }
+.controls {
+  display: flex; gap: 12px; align-items: center; flex-wrap: wrap;
+  margin-top: 12px; font-size: 13px; color: var(--fg-dim);
+}
+.controls button {
+  background: var(--panel-2); color: var(--fg); border: 1px solid #333;
+  padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 13px;
+}
+.controls button:hover { background: #2c3140; }
+.controls label { display: inline-flex; gap: 8px; align-items: center; }
+.status { margin-left: auto; font-style: italic; }
+
+.board {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 4px;
+  background: var(--grid);
+  padding: 6px;
+  border-radius: 6px;
+  aspect-ratio: 7 / 6;
+}
+.cell {
+  background: var(--panel-2);
+  border-radius: 50%;
+  aspect-ratio: 1 / 1;
+  cursor: pointer;
+  position: relative;
+  transition: background 80ms ease;
+}
+.cell.hint:hover { background: var(--hint); }
+.cell.p1 { background: var(--p1); }
+.cell.p2 { background: var(--p2); }
+.cell.win { box-shadow: 0 0 0 3px var(--accent) inset; }
+
+.panel { background: var(--panel); border-radius: 8px; padding: 16px; }
+.panel h2 { font-size: 13px; color: var(--fg-dim); font-weight: 500; margin: 0 0 8px; text-transform: uppercase; letter-spacing: 0.5px; }
+.panel h2 + * { margin-bottom: 16px; }
+
+.policy-bars {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 6px;
+  align-items: end;
+  height: 200px;
+  margin-bottom: 24px;
+  padding-top: 18px; /* room for the percentage labels above bars */
+}
+.policy-bars .bar {
+  background: var(--panel-2);
+  border-radius: 4px 4px 0 0;
+  position: relative;
+  height: 100%;
+  min-height: 2px;
+}
+.policy-bars .bar .fill {
+  position: absolute;
+  bottom: 0; left: 0; right: 0;
+  background: linear-gradient(180deg, #f5b342 0%, #d68a1c 100%);
+  border-radius: 4px 4px 0 0;
+  transition: height 240ms ease;
+  box-shadow: 0 0 8px rgba(245, 179, 66, 0.25);
+}
+.policy-bars .bar.argmax .fill {
+  background: linear-gradient(180deg, #ffd166 0%, #f5b342 100%);
+  box-shadow: 0 0 12px rgba(255, 209, 102, 0.55);
+}
+.policy-bars .bar.dimmed .fill { opacity: 0.18; box-shadow: none; }
+.policy-bars .bar .prior {
+  position: absolute; left: -2px; right: -2px;
+  height: 2px;
+  background: #6aa6ff;
+  transition: bottom 240ms ease;
+  pointer-events: none;
+  box-shadow: 0 0 4px rgba(106, 166, 255, 0.6);
+}
+.policy-bars .bar .pct {
+  position: absolute;
+  top: -18px; left: 0; right: 0;
+  text-align: center;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--fg);
+}
+.policy-bars .bar.dimmed .pct { color: var(--fg-dim); }
+.policy-bars .bar .col-label {
+  position: absolute;
+  bottom: -18px; left: 0; right: 0;
+  text-align: center;
+  font-size: 11px;
+  color: var(--fg-dim);
+  font-variant-numeric: tabular-nums;
+}
+.policy-legend {
+  display: flex; gap: 16px; align-items: center;
+  font-size: 11px; color: var(--fg-dim);
+  margin-top: 6px;
+}
+.policy-legend .swatch { display: inline-block; width: 12px; height: 8px; border-radius: 2px; vertical-align: middle; margin-right: 4px; }
+.policy-legend .swatch.visits { background: linear-gradient(180deg, #f5b342 0%, #d68a1c 100%); }
+.policy-legend .swatch.prior { background: #6aa6ff; height: 2px; }
+
+.value-readout { font-size: 24px; font-variant-numeric: tabular-nums; color: var(--accent); }

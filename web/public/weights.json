@@ -1,0 +1,510 @@
+{
+  "tensors": [
+    {
+      "name": "input_block.0.weight",
+      "shape": [
+        64,
+        3,
+        3,
+        3
+      ],
+      "offset": 0,
+      "size": 6912
+    },
+    {
+      "name": "input_block.0.bias",
+      "shape": [
+        64
+      ],
+      "offset": 6912,
+      "size": 256
+    },
+    {
+      "name": "input_block.1.weight",
+      "shape": [
+        64
+      ],
+      "offset": 7168,
+      "size": 256
+    },
+    {
+      "name": "input_block.1.bias",
+      "shape": [
+        64
+      ],
+      "offset": 7424,
+      "size": 256
+    },
+    {
+      "name": "input_block.1.running_mean",
+      "shape": [
+        64
+      ],
+      "offset": 7680,
+      "size": 256
+    },
+    {
+      "name": "input_block.1.running_var",
+      "shape": [
+        64
+      ],
+      "offset": 7936,
+      "size": 256
+    },
+    {
+      "name": "res_blocks.0.conv1.weight",
+      "shape": [
+        64,
+        64,
+        3,
+        3
+      ],
+      "offset": 8192,
+      "size": 147456
+    },
+    {
+      "name": "res_blocks.0.conv1.bias",
+      "shape": [
+        64
+      ],
+      "offset": 155648,
+      "size": 256
+    },
+    {
+      "name": "res_blocks.0.bn1.weight",
+      "shape": [
+        64
+      ],
+      "offset": 155904,
+      "size": 256
+    },
+    {
+      "name": "res_blocks.0.bn1.bias",
+      "shape": [
+        64
+      ],
+      "offset": 156160,
+      "size": 256
+    },
+    {
+      "name": "res_blocks.0.bn1.running_mean",
+      "shape": [
+        64
+      ],
+      "offset": 156416,
+      "size": 256
+    },
+    {
+      "name": "res_blocks.0.bn1.running_var",
+      "shape": [
+        64
+      ],
+      "offset": 156672,
+      "size": 256
+    },
+    {
+      "name": "res_blocks.0.conv2.weight",
+      "shape": [
+        64,
+        64,
+        3,
+        3
+      ],
+      "offset": 156928,
+      "size": 147456
+    },
+    {
+      "name": "res_blocks.0.conv2.bias",
+      "shape": [
+        64
+      ],
+      "offset": 304384,
+      "size": 256
+    },
+    {
+      "name": "res_blocks.0.bn2.weight",
+      "shape": [
+        64
+      ],
+      "offset": 304640,
+      "size": 256
+    },
+    {
+      "name": "res_blocks.0.bn2.bias",
+      "shape": [
+        64
+      ],
+      "offset": 304896,
+      "size": 256
+    },
+    {
+      "name": "res_blocks.0.bn2.running_mean",
+      "shape": [
+        64
+      ],
+      "offset": 305152,
+      "size": 256
+    },
+    {
+      "name": "res_blocks.0.bn2.running_var",
+      "shape": [
+        64
+      ],
+      "offset": 305408,
+      "size": 256
+    },
+    {
+      "name": "res_blocks.1.conv1.weight",
+      "shape": [
+        64,
+        64,
+        3,
+        3
+      ],
+      "offset": 305664,
+      "size": 147456
+    },
+    {
+      "name": "res_blocks.1.conv1.bias",
+      "shape": [
+        64
+      ],
+      "offset": 453120,
+      "size": 256
+    },
+    {
+      "name": "res_blocks.1.bn1.weight",
+      "shape": [
+        64
+      ],
+      "offset": 453376,
+      "size": 256
+    },
+    {
+      "name": "res_blocks.1.bn1.bias",
+      "shape": [
+        64
+      ],
+      "offset": 453632,
+      "size": 256
+    },
+    {
+      "name": "res_blocks.1.bn1.running_mean",
+      "shape": [
+        64
+      ],
+      "offset": 453888,
+      "size": 256
+    },
+    {
+      "name": "res_blocks.1.bn1.running_var",
+      "shape": [
+        64
+      ],
+      "offset": 454144,
+      "size": 256
+    },
+    {
+      "name": "res_blocks.1.conv2.weight",
+      "shape": [
+        64,
+        64,
+        3,
+        3
+      ],
+      "offset": 454400,
+      "size": 147456
+    },
+    {
+      "name": "res_blocks.1.conv2.bias",
+      "shape": [
+        64
+      ],
+      "offset": 601856,
+      "size": 256
+    },
+    {
+      "name": "res_blocks.1.bn2.weight",
+      "shape": [
+        64
+      ],
+      "offset": 602112,
+      "size": 256
+    },
+    {
+      "name": "res_blocks.1.bn2.bias",
+      "shape": [
+        64
+      ],
+      "offset": 602368,
+      "size": 256
+    },
+    {
+      "name": "res_blocks.1.bn2.running_mean",
+      "shape": [
+        64
+      ],
+      "offset": 602624,
+      "size": 256
+    },
+    {
+      "name": "res_blocks.1.bn2.running_var",
+      "shape": [
+        64
+      ],
+      "offset": 602880,
+      "size": 256
+    },
+    {
+      "name": "res_blocks.2.conv1.weight",
+      "shape": [
+        64,
+        64,
+        3,
+        3
+      ],
+      "offset": 603136,
+      "size": 147456
+    },
+    {
+      "name": "res_blocks.2.conv1.bias",
+      "shape": [
+        64
+      ],
+      "offset": 750592,
+      "size": 256
+    },
+    {
+      "name": "res_blocks.2.bn1.weight",
+      "shape": [
+        64
+      ],
+      "offset": 750848,
+      "size": 256
+    },
+    {
+      "name": "res_blocks.2.bn1.bias",
+      "shape": [
+        64
+      ],
+      "offset": 751104,
+      "size": 256
+    },
+    {
+      "name": "res_blocks.2.bn1.running_mean",
+      "shape": [
+        64
+      ],
+      "offset": 751360,
+      "size": 256
+    },
+    {
+      "name": "res_blocks.2.bn1.running_var",
+      "shape": [
+        64
+      ],
+      "offset": 751616,
+      "size": 256
+    },
+    {
+      "name": "res_blocks.2.conv2.weight",
+      "shape": [
+        64,
+        64,
+        3,
+        3
+      ],
+      "offset": 751872,
+      "size": 147456
+    },
+    {
+      "name": "res_blocks.2.conv2.bias",
+      "shape": [
+        64
+      ],
+      "offset": 899328,
+      "size": 256
+    },
+    {
+      "name": "res_blocks.2.bn2.weight",
+      "shape": [
+        64
+      ],
+      "offset": 899584,
+      "size": 256
+    },
+    {
+      "name": "res_blocks.2.bn2.bias",
+      "shape": [
+        64
+      ],
+      "offset": 899840,
+      "size": 256
+    },
+    {
+      "name": "res_blocks.2.bn2.running_mean",
+      "shape": [
+        64
+      ],
+      "offset": 900096,
+      "size": 256
+    },
+    {
+      "name": "res_blocks.2.bn2.running_var",
+      "shape": [
+        64
+      ],
+      "offset": 900352,
+      "size": 256
+    },
+    {
+      "name": "policy_head.0.weight",
+      "shape": [
+        32,
+        64,
+        1,
+        1
+      ],
+      "offset": 900608,
+      "size": 8192
+    },
+    {
+      "name": "policy_head.0.bias",
+      "shape": [
+        32
+      ],
+      "offset": 908800,
+      "size": 128
+    },
+    {
+      "name": "policy_head.1.weight",
+      "shape": [
+        32
+      ],
+      "offset": 908928,
+      "size": 128
+    },
+    {
+      "name": "policy_head.1.bias",
+      "shape": [
+        32
+      ],
+      "offset": 909056,
+      "size": 128
+    },
+    {
+      "name": "policy_head.1.running_mean",
+      "shape": [
+        32
+      ],
+      "offset": 909184,
+      "size": 128
+    },
+    {
+      "name": "policy_head.1.running_var",
+      "shape": [
+        32
+      ],
+      "offset": 909312,
+      "size": 128
+    },
+    {
+      "name": "policy_head.4.weight",
+      "shape": [
+        7,
+        1344
+      ],
+      "offset": 909440,
+      "size": 37632
+    },
+    {
+      "name": "policy_head.4.bias",
+      "shape": [
+        7
+      ],
+      "offset": 947072,
+      "size": 28
+    },
+    {
+      "name": "value_head.0.weight",
+      "shape": [
+        3,
+        64,
+        1,
+        1
+      ],
+      "offset": 947100,
+      "size": 768
+    },
+    {
+      "name": "value_head.0.bias",
+      "shape": [
+        3
+      ],
+      "offset": 947868,
+      "size": 12
+    },
+    {
+      "name": "value_head.1.weight",
+      "shape": [
+        3
+      ],
+      "offset": 947880,
+      "size": 12
+    },
+    {
+      "name": "value_head.1.bias",
+      "shape": [
+        3
+      ],
+      "offset": 947892,
+      "size": 12
+    },
+    {
+      "name": "value_head.1.running_mean",
+      "shape": [
+        3
+      ],
+      "offset": 947904,
+      "size": 12
+    },
+    {
+      "name": "value_head.1.running_var",
+      "shape": [
+        3
+      ],
+      "offset": 947916,
+      "size": 12
+    },
+    {
+      "name": "value_head.4.weight",
+      "shape": [
+        1,
+        126
+      ],
+      "offset": 947928,
+      "size": 504
+    },
+    {
+      "name": "value_head.4.bias",
+      "shape": [
+        1
+      ],
+      "offset": 948432,
+      "size": 4
+    }
+  ],
+  "model_args": {
+    "num_res_blocks": 3,
+    "num_hidden": 64
+  },
+  "game": {
+    "row_count": 6,
+    "column_count": 7,
+    "action_size": 7,
+    "num_channels": 3
+  },
+  "bn_eps": 1e-05,
+  "source_checkpoint": "connect4_iter_0050.pt",
+  "iteration": 50
+}

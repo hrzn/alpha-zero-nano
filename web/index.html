@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>AlphaZero · Connect 4</title>
+    <link rel="stylesheet" href="/src/style.css" />
+  </head>
+  <body>
+    <main id="app">
+      <header>
+        <h1>AlphaZero · Connect 4</h1>
+        <p class="sub">A small neural net + MCTS, running entirely in your browser.</p>
+      </header>
+
+      <section class="play">
+        <div class="board-wrap">
+          <div id="board" class="board" aria-label="Connect 4 board"></div>
+          <div class="controls">
+            <button id="reset">Reset</button>
+            <label>
+              MCTS sims
+              <input id="sims" type="range" min="20" max="800" step="20" value="100" />
+              <span id="sims-readout">100</span>
+            </label>
+            <span id="status" class="status">loading…</span>
+          </div>
+        </div>
+
+        <aside class="panel">
+          <h2>Agent's policy (per column)</h2>
+          <div id="policy-bars" class="policy-bars"></div>
+          <div class="policy-legend">
+            <span><span class="swatch visits"></span>MCTS visits</span>
+            <span><span class="swatch prior"></span>network prior</span>
+          </div>
+          <h2>Value estimate</h2>
+          <div id="value-readout" class="value-readout">—</div>
+        </aside>
+      </section>
+    </main>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
