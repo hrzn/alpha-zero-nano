@@ -24,25 +24,37 @@ import struct
 
 import torch
 
+DEFAULT_CHAMPION = "checkpoints/c4/connect4_best.pt"
 DEFAULT_CKPT_GLOB = "checkpoints/c4/connect4_iter_*.pt"
 DEFAULT_OUT_DIR = "web/public"
 BN_EPS = 1e-5  # PyTorch BatchNorm2d default
 
 
-def find_latest(pattern):
-    files = sorted(glob.glob(pattern))
+def find_default_checkpoint():
+    """Prefer the arena-gated champion if present, else fall back to the
+    most recent iter checkpoint. Letting the web demo always ship the
+    best-validated model is the whole point of arena gating."""
+    if os.path.exists(DEFAULT_CHAMPION):
+        return DEFAULT_CHAMPION
+    files = sorted(glob.glob(DEFAULT_CKPT_GLOB))
     if not files:
-        raise FileNotFoundError(f"No checkpoint matching {pattern}")
+        raise FileNotFoundError(
+            f"No champion at {DEFAULT_CHAMPION} and no iter checkpoints matching {DEFAULT_CKPT_GLOB}"
+        )
     return files[-1]
 
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument("--ckpt", default=None, help=f"Checkpoint .pt (default: latest matching {DEFAULT_CKPT_GLOB})")
+    p.add_argument(
+        "--ckpt",
+        default=None,
+        help=f"Checkpoint .pt (default: {DEFAULT_CHAMPION} if present, else latest {DEFAULT_CKPT_GLOB})",
+    )
     p.add_argument("--out-dir", default=DEFAULT_OUT_DIR)
     args = p.parse_args()
 
-    ckpt_path = args.ckpt or find_latest(DEFAULT_CKPT_GLOB)
+    ckpt_path = args.ckpt or find_default_checkpoint()
     print(f"Loading {ckpt_path}")
     ckpt = torch.load(ckpt_path, weights_only=False, map_location="cpu")
 

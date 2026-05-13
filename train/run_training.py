@@ -135,7 +135,7 @@ PRESETS = {
         "game": "connect4",
         "num_res_blocks": 3,
         "num_hidden": 64,
-        "num_searches": 100,
+        "num_searches": 200,
         "mcts_batch_size": 20,
         "c_puct": 1.0,
         "dirichlet_alpha": 1.0,  # 7-action space → larger alpha than chess
@@ -147,15 +147,23 @@ PRESETS = {
         "num_epochs": 4,
         "train_batch_size": 128,
         "lr": 1e-3,
-        "lr_milestones": [],
+        "lr_milestones": [100, 200],  # halves at these steps
         "replay_buffer_size": 10_000,
-        "num_iterations": 50,
+        "num_iterations": 300,
         "checkpoint_interval": 5,
         "eval_interval": 5,
         "eval_games": 20,
         "eval_searches": 50,
+        # Arena gating: at each eval round, promote the trainee to "champion"
+        # only if it wins more than this fraction of arena games against the
+        # current champion. The champion is what the web demo serves and what
+        # subsequent eval rounds compare against.
+        "arena_threshold": 0.55,
     },
 }
+
+# Default arena threshold for presets that don't specify one explicitly.
+DEFAULT_ARENA_THRESHOLD = 0.55
 
 DEFAULT_CHECKPOINT_DIR = "checkpoints"
 W = 70  # console width
@@ -265,24 +273,9 @@ def _ckpt_prefix(args):
     return f"{args['game']}_iter_"
 
 
-def _find_eval_baseline(checkpoint_dir, current_iter, eval_interval, args):
-    """Return the path of the most recent checkpoint at least eval_interval iters behind current.
-
-    Returns None if no such checkpoint exists yet.
-    """
-    target = current_iter - eval_interval
-    prefix = _ckpt_prefix(args)
-    files = sorted(glob.glob(os.path.join(checkpoint_dir, f"{prefix}*.pt")))
-    best = None
-    for f in files:
-        stem = os.path.basename(f)
-        try:
-            it = int(stem[len(prefix) : -len(".pt")])
-        except ValueError:
-            continue
-        if it <= target:
-            best = f
-    return best
+def _champion_path(checkpoint_dir, args):
+    """Path of the arena-gated 'best so far' checkpoint for this game."""
+    return os.path.join(checkpoint_dir, f"{args['game']}_best.pt")
 
 
 # ── Evaluation ────────────────────────────────────────────────────────────────
@@ -406,6 +399,11 @@ def run_training(preset_name="S", device=None, checkpoint_dir=None):
     print(
         f"  Loop   : {args['num_iterations']} iters  ckpt every {args['checkpoint_interval']}  eval every {args['eval_interval']}"
     )
+    arena_threshold = args.get("arena_threshold", DEFAULT_ARENA_THRESHOLD)
+    print(
+        f"  Arena  : {args['eval_games']} games vs champion; "
+        f"promote if win rate > {arena_threshold:.0%}"
+    )
     print(f"  Device : {device}  |  dir: {checkpoint_dir}")
     print(_hr("═"))
 
@@ -420,7 +418,8 @@ def run_training(preset_name="S", device=None, checkpoint_dir=None):
         optimizer = optim.Adam(model.parameters(), lr=args["lr"])
         start_iter = 0
         loss_history = []
-        # Save iter-0 baseline so evaluation has something to compare against
+        # Save iter-0 baseline AND make it the initial champion. The first
+        # arena eval will gate replacement of this champion by the trainee.
         save_checkpoint(
             os.path.join(checkpoint_dir, f"{_ckpt_prefix(args)}0000.pt"),
             0,
@@ -429,9 +428,25 @@ def run_training(preset_name="S", device=None, checkpoint_dir=None):
             loss_history,
             args,
         )
-        print(f"  Fresh start. Saved iter-0 baseline.")
+        save_checkpoint(
+            _champion_path(checkpoint_dir, args),
+            0,
+            model,
+            optimizer,
+            loss_history,
+            args,
+        )
+        print(f"  Fresh start. Saved iter-0 baseline and initial champion.")
     else:
-        print(f"  Resumed from iteration {start_iter}.")
+        champ_path = _champion_path(checkpoint_dir, args)
+        if os.path.exists(champ_path):
+            champ_iter = torch.load(champ_path, weights_only=False).get("iteration", "?")
+            print(f"  Resumed from iter {start_iter}; champion = iter {champ_iter}.")
+        else:
+            # Older runs may predate arena gating; seed the champion with the
+            # resumed model so subsequent eval rounds have something to compare.
+            save_checkpoint(champ_path, start_iter, model, optimizer, loss_history, args)
+            print(f"  Resumed from iter {start_iter}; seeded champion = iter {start_iter}.")
 
     model = model.to(device)
 
@@ -619,26 +634,24 @@ def run_training(preset_name="S", device=None, checkpoint_dir=None):
 
         # ── Checkpoint ────────────────────────────────────────────────────
         if iter_num % args["checkpoint_interval"] == 0:
-            ckpt_path = os.path.join(checkpoint_dir, f"{_ckpt_prefix(args)}{iter_num:04d}.pt")
+            ckpt_path = os.path.join(
+                checkpoint_dir, f"{_ckpt_prefix(args)}{iter_num:04d}.pt"
+            )
             save_checkpoint(ckpt_path, iter_num, model, optimizer, loss_history, args)
             with open(os.path.join(checkpoint_dir, "loss_history.json"), "w") as f:
                 json.dump(loss_history, f)
             print(f"  Saved {ckpt_path}")
 
-        # ── Evaluation ────────────────────────────────────────────────────
+        # ── Arena eval & gating ───────────────────────────────────────────
         if iter_num % args["eval_interval"] == 0:
-            baseline_path = _find_eval_baseline(
-                checkpoint_dir, iter_num, args["eval_interval"], args
-            )
-            if baseline_path is not None:
-                prefix = _ckpt_prefix(args)
-                baseline_iter = int(
-                    os.path.basename(baseline_path)[len(prefix) : -len(".pt")]
-                )
+            champ_path = _champion_path(checkpoint_dir, args)
+            if os.path.exists(champ_path):
+                champ_ckpt = torch.load(champ_path, weights_only=False)
+                champ_iter = champ_ckpt.get("iteration", 0)
                 print(
-                    f"\n  {_section(f'Eval: iter {iter_num} vs iter {baseline_iter}', char='┄')}"
+                    f"\n  {_section(f'Arena: iter {iter_num} vs champion (iter {champ_iter})', char='┄')}"
                 )
-                old_model = _load_model_at(baseline_path, game, args).to(device)
+                old_model = _load_model_at(champ_path, game, args).to(device)
                 t0 = time.perf_counter()
                 result = run_evaluation(game, model, old_model, args)
                 eval_time = time.perf_counter() - t0
@@ -646,13 +659,16 @@ def run_training(preset_name="S", device=None, checkpoint_dir=None):
 
                 w, d, l = result["wins"], result["draws"], result["losses"]
                 wr = result["win_rate"]
-                trend = (
-                    "▲ improving"
-                    if wr > 0.55
-                    else ("▼ regressing" if wr < 0.45 else "~ stable")
-                )
+                promoted = wr > arena_threshold
+                if promoted:
+                    save_checkpoint(
+                        champ_path, iter_num, model, optimizer, loss_history, args
+                    )
+                    verdict = f"↑ PROMOTED to champion (was iter {champ_iter})"
+                else:
+                    verdict = f"· champion held at iter {champ_iter}"
                 print(
-                    f"  {w}W {d}D {l}L  win rate {wr:.1%}  {trend}"
+                    f"  {w}W {d}D {l}L  win rate {wr:.1%}  {verdict}"
                     f"  [{_fmt_time(eval_time)}]"
                 )
 
@@ -665,11 +681,12 @@ def run_training(preset_name="S", device=None, checkpoint_dir=None):
                 eval_hist.append(
                     {
                         "iteration": iter_num,
-                        "baseline_iter": baseline_iter,
+                        "champion_iter": champ_iter,
                         "wins": w,
                         "draws": d,
                         "losses": l,
                         "win_rate": wr,
+                        "promoted": promoted,
                     }
                 )
                 with open(eval_hist_path, "w") as f:
