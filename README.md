@@ -1,6 +1,6 @@
 # alpha-zero-nano
 
-A (somewhat) minimal, vibe-coded AlphaZero implementation for 2-player games. Pure self-play, no human games, no external engines — just a neural network learning by playing itself, guided by MCTS.
+A (somewhat) minimal, vibe-coded AlphaZero implementation for 2-player games. Pure self-play, no human data — just a neural network learning by playing itself, guided by MCTS.
 
 Trains comfortably on a MacBook Pro (M1/MPS) for **Tic-tac-toe** (trivial) and **Connect 4** (a few hours). **Chess** is implemented too, but reaching non-trivial play would need more compute.
 

@@ -24,4 +24,6 @@ packages = ["tictactoe", "chess_game", "connect4", "mcts", "model", "train"]
 [dependency-groups]
 dev = [
     "pytest>=9.0.2",
+    "onnx>=1.16.0",
+    "onnxruntime>=1.18.0",
 ]
