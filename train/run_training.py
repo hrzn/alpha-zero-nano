@@ -165,6 +165,11 @@ PRESETS = {
 # Default arena threshold for presets that don't specify one explicitly.
 DEFAULT_ARENA_THRESHOLD = 0.55
 
+# Default number of opening moves sampled from the MCTS visit policy during
+# arena evaluation. Without this, both networks play deterministically from a
+# fixed start and every game in the eval batch collapses to the same line.
+DEFAULT_EVAL_OPENING_TEMP_MOVES = 2
+
 DEFAULT_CHECKPOINT_DIR = "checkpoints"
 W = 70  # console width
 
@@ -281,17 +286,25 @@ def _champion_path(checkpoint_dir, args):
 # ── Evaluation ────────────────────────────────────────────────────────────────
 
 
-def _play_eval_game(game, mcts_white, mcts_black, max_moves):
-    """Play one greedy game. Returns 1 (white wins), -1 (black wins), 0 (draw)."""
+def _play_eval_game(game, mcts_white, mcts_black, max_moves, opening_temp_moves=0):
+    """Play one eval game. Returns 1 (white wins), -1 (black wins), 0 (draw).
+
+    The first `opening_temp_moves` moves are sampled proportionally to the
+    MCTS visit policy so games starting from the same position diverge;
+    remaining moves are played greedily (argmax) to measure best-play strength.
+    """
     state = game.get_initial_state()
     player = 1
     mcts_white._root = None
     mcts_black._root = None
 
-    for _ in range(max_moves):
+    for move_count in range(max_moves):
         mcts = mcts_white if player == 1 else mcts_black
         policy = mcts.search(state, player)
-        action = int(np.argmax(policy))
+        if move_count < opening_temp_moves:
+            action = int(np.random.choice(game.action_size, p=policy))
+        else:
+            action = int(np.argmax(policy))
         # Both trees advance so tree reuse stays valid for both sides
         mcts_white.advance_root(action)
         mcts_black.advance_root(action)
@@ -311,6 +324,9 @@ def run_evaluation(game, new_model, old_model, args):
     """
     n = args["eval_games"]
     searches = args["eval_searches"]
+    opening_temp_moves = args.get(
+        "eval_opening_temp_moves", DEFAULT_EVAL_OPENING_TEMP_MOVES
+    )
     wins = draws = losses = 0
 
     for i in range(n):
@@ -318,7 +334,9 @@ def run_evaluation(game, new_model, old_model, args):
         mcts_old = MCTS(game, model=old_model, num_searches=searches)
         new_is_white = i % 2 == 0
         if new_is_white:
-            result = _play_eval_game(game, mcts_new, mcts_old, args["max_moves"])
+            result = _play_eval_game(
+                game, mcts_new, mcts_old, args["max_moves"], opening_temp_moves
+            )
             if result == 1:
                 wins += 1
             elif result == -1:
@@ -326,7 +344,9 @@ def run_evaluation(game, new_model, old_model, args):
             else:
                 draws += 1
         else:
-            result = _play_eval_game(game, mcts_old, mcts_new, args["max_moves"])
+            result = _play_eval_game(
+                game, mcts_old, mcts_new, args["max_moves"], opening_temp_moves
+            )
             if result == -1:
                 wins += 1
             elif result == 1:
@@ -400,9 +420,13 @@ def run_training(preset_name="S", device=None, checkpoint_dir=None):
         f"  Loop   : {args['num_iterations']} iters  ckpt every {args['checkpoint_interval']}  eval every {args['eval_interval']}"
     )
     arena_threshold = args.get("arena_threshold", DEFAULT_ARENA_THRESHOLD)
+    opening_temp_moves = args.get(
+        "eval_opening_temp_moves", DEFAULT_EVAL_OPENING_TEMP_MOVES
+    )
     print(
         f"  Arena  : {args['eval_games']} games vs champion; "
         f"promote if win rate > {arena_threshold:.0%}"
+        f"  (opening temp moves={opening_temp_moves})"
     )
     print(f"  Device : {device}  |  dir: {checkpoint_dir}")
     print(_hr("═"))
