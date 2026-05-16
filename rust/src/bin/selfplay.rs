@@ -21,11 +21,12 @@
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use std::thread;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
-use alpha_zero_nano::inference::OnnxEvaluator;
+use alpha_zero_nano::inference::{BatchedOnnxEvaluator, BatcherConfig};
 use alpha_zero_nano::selfplay::{play_game, Example, SelfPlayConfig};
 use alpha_zero_nano::shards::write_shards;
 use rand::SeedableRng;
@@ -38,6 +39,7 @@ struct Args {
     num_games: u32,
     num_workers: u32,
     cfg: SelfPlayConfig,
+    batcher: BatcherConfig,
     seed: u64,
 }
 
@@ -45,7 +47,8 @@ fn print_usage() {
     eprintln!(
         "selfplay --model <onnx> --out <dir> --num-games N --num-workers N \\\n\
          \t--num-searches N --c-puct F --batch-size N --max-moves N --temp-threshold N \\\n\
-         \t--dirichlet-alpha F --dirichlet-epsilon F --seed N"
+         \t--dirichlet-alpha F --dirichlet-epsilon F --seed N \\\n\
+         \t[--max-batch-size N] [--batch-timeout-ms F]"
     );
 }
 
@@ -62,6 +65,9 @@ fn parse_args() -> Result<Args, String> {
     let mut dirichlet_alpha: f32 = 0.3;
     let mut dirichlet_epsilon: f32 = 0.25;
     let mut seed: u64 = 0;
+    let mut max_batch_size: usize = BatcherConfig::default().max_batch_size;
+    let mut batch_timeout_ms: f64 =
+        BatcherConfig::default().batch_timeout.as_secs_f64() * 1000.0;
 
     let argv: Vec<String> = std::env::args().skip(1).collect();
     let mut i = 0;
@@ -88,6 +94,14 @@ fn parse_args() -> Result<Args, String> {
             "--dirichlet-alpha" => { dirichlet_alpha = val()?.parse().map_err(|e| format!("{e}"))?; i += 2; }
             "--dirichlet-epsilon" => { dirichlet_epsilon = val()?.parse().map_err(|e| format!("{e}"))?; i += 2; }
             "--seed" => { seed = val()?.parse().map_err(|e| format!("{e}"))?; i += 2; }
+            "--max-batch-size" => {
+                max_batch_size = val()?.parse().map_err(|e| format!("{e}"))?;
+                i += 2;
+            }
+            "--batch-timeout-ms" => {
+                batch_timeout_ms = val()?.parse().map_err(|e| format!("{e}"))?;
+                i += 2;
+            }
             "-h" | "--help" => { print_usage(); std::process::exit(0); }
             unknown => return Err(format!("unknown arg: {unknown}")),
         }
@@ -106,6 +120,10 @@ fn parse_args() -> Result<Args, String> {
             dirichlet_epsilon,
             max_moves,
             temp_threshold,
+        },
+        batcher: BatcherConfig {
+            max_batch_size,
+            batch_timeout: Duration::from_secs_f64(batch_timeout_ms / 1000.0),
         },
         seed,
     })
@@ -155,7 +173,7 @@ fn run() -> Result<(), String> {
     std::fs::create_dir_all(&args.out).map_err(|e| format!("mkdir {}: {e}", args.out.display()))?;
 
     let evaluator = Arc::new(
-        OnnxEvaluator::new(&args.model)
+        BatchedOnnxEvaluator::with_config(&args.model, args.batcher)
             .map_err(|e| format!("load ONNX {}: {e}", args.model.display()))?,
     );
 
@@ -167,10 +185,23 @@ fn run() -> Result<(), String> {
     }
 
     println!(
-        "selfplay: {} games across {} worker(s), seed={}, sims/move={}, batch={}",
-        args.num_games, n_workers, args.seed, args.cfg.num_searches, args.cfg.batch_size,
+        "selfplay: {} games across {} worker(s), seed={}, sims/move={}, mcts_batch={}, \
+         batcher_max={}, batcher_timeout={:.1}ms",
+        args.num_games,
+        n_workers,
+        args.seed,
+        args.cfg.num_searches,
+        args.cfg.batch_size,
+        args.batcher.max_batch_size,
+        args.batcher.batch_timeout.as_secs_f64() * 1000.0,
     );
     let t0 = Instant::now();
+
+    // Shared progress counter — each worker bumps it after finishing a game
+    // and prints a heartbeat with global progress + ETA. Mutex isn't needed:
+    // println! atomically writes whole lines, and the counter is atomic.
+    let completed = Arc::new(AtomicU32::new(0));
+    let total_games = args.num_games;
 
     let mut handles = Vec::new();
     for (worker_id, games) in games_per_worker.iter().enumerate() {
@@ -178,11 +209,28 @@ fn run() -> Result<(), String> {
         let cfg = args.cfg.clone();
         let games = *games;
         let worker_seed = args.seed.wrapping_add(worker_id as u64);
+        let completed = Arc::clone(&completed);
+        let t0_global = t0;
         handles.push(thread::spawn(move || -> Vec<Example> {
             let mut rng = ChaCha8Rng::seed_from_u64(worker_seed);
             let mut out = Vec::new();
             for _ in 0..games {
+                let t_game = Instant::now();
                 let examples = play_game(&*ev, &cfg, &mut rng);
+                let game_elapsed = t_game.elapsed().as_secs_f64();
+                let n_moves = examples.len();
+
+                let done = completed.fetch_add(1, Ordering::Relaxed) + 1;
+                let total_elapsed = t0_global.elapsed().as_secs_f64();
+                let avg_per_game = total_elapsed / done as f64;
+                let eta_s = avg_per_game * (total_games - done) as f64;
+                let counter_w = total_games.to_string().len();
+                println!(
+                    "  [w{worker_id}] game {done:>cw$}/{total_games} in {game_elapsed:>5.1}s  m={n_moves:>3}  eta {eta}",
+                    cw = counter_w,
+                    eta = fmt_short_time(eta_s),
+                );
+
                 out.extend(examples);
             }
             out
@@ -211,6 +259,21 @@ fn run() -> Result<(), String> {
     write_shards(&args.out, &all).map_err(|e| format!("write_shards: {e}"))?;
     println!("selfplay: wrote shards to {}", args.out.display());
     Ok(())
+}
+
+/// Compact mm:ss / hh:mm:ss formatting for ETAs in heartbeat lines.
+fn fmt_short_time(secs: f64) -> String {
+    if !secs.is_finite() || secs < 0.0 {
+        return "?".into();
+    }
+    let s = secs.round() as u64;
+    let (h, rem) = (s / 3600, s % 3600);
+    let (m, sec) = (rem / 60, rem % 60);
+    if h > 0 {
+        format!("{h}h{m:02}m")
+    } else {
+        format!("{m}m{sec:02}s")
+    }
 }
 
 fn main() -> ExitCode {

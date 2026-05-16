@@ -18,6 +18,10 @@ ndarray = "0.16"
 rand = "0.9"
 rand_chacha = "0.9"
 rand_distr = "0.5"
+# Multi-producer single-consumer channel for the inference batcher. std's
+# mpsc would work too but crossbeam has the recv_timeout / select primitives
+# that make the batcher's "fill until timeout or full" loop two lines.
+crossbeam-channel = "0.5"
 
 [[bin]]
 name = "selfplay"
