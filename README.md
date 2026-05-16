@@ -83,6 +83,32 @@ design/         Strategy and optimization notes
 
 ## Tests
 
+Python tests
 ```bash
 uv run pytest
+```
+
+Rust tests:
+```bash
+cd rust && cargo test
+```
+
+Verification matrix for rust port:
+```bash
+# Phase 0 — ONNX export sanity (Python)
+uv run pytest tools/test_export_chess_onnx.py
+
+# Phase 1 — encoder / action / game parity (Rust + Python)
+uv run python tools/gen_rust_parity_fixtures.py
+uv run pytest chess_game/
+cd rust && cargo test --test parity --test encoding_unit --test action_unit
+
+# Phase 2 — MCTS parity (Rust + Python)
+uv run python tools/gen_mcts_parity_fixtures.py
+uv run pytest chess_game/test_rust_mcts_fixtures.py
+cd rust && cargo test --test mcts_parity
+
+# Phase 3 — Rust ORT inference parity + end-to-end smoke
+uv run python tools/gen_inference_parity_fixtures.py     # regenerates ~33 MB ONNX
+cd rust && cargo test --test inference_parity --test mcts_onnx_smoke
 ```

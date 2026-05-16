@@ -10,6 +10,10 @@
 pub mod action;
 pub mod encoding;
 pub mod game;
+pub mod inference;
+pub mod mcts;
+pub mod selfplay;
+pub mod shards;
 
 pub use action::{action_to_uci, uci_to_action, Action, ActionError, ACTION_SIZE};
 pub use encoding::{

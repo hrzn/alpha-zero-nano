@@ -7,6 +7,21 @@ description = "Rust port of the AlphaZero-nano chess hot path (Phase 0+1: encode
 [dependencies]
 shakmaty = "0.27"
 thiserror = "1"
+# ort 2.x with load-dynamic — the libonnxruntime dylib is found at runtime
+# via ORT_DYLIB_PATH (set by the test harness to point at the .dylib that
+# ships with the project's onnxruntime Python package). Avoids the ort
+# build-time binary download, which transitively pulls deps with edition2024
+# requirements that are awkward to satisfy.
+ort = { version = "=2.0.0-rc.10", default-features = false, features = ["load-dynamic", "ndarray"] }
+ort-sys = "=2.0.0-rc.10"
+ndarray = "0.16"
+rand = "0.9"
+rand_chacha = "0.9"
+rand_distr = "0.5"
+
+[[bin]]
+name = "selfplay"
+path = "src/bin/selfplay.rs"
 
 [dev-dependencies]
 serde = { version = "1", features = ["derive"] }

@@ -22,7 +22,6 @@ Resumes automatically from the latest checkpoint in --dir.
 
 import argparse
 import collections
-import glob
 import json
 import multiprocessing
 import os
@@ -37,6 +36,22 @@ from chess_game.chess_game import ChessGame
 from connect4 import Connect4
 from mcts.mcts import MCTS
 from model.model import ResNet
+from train.common import (
+    DEFAULT_ARENA_THRESHOLD,
+    DEFAULT_CHECKPOINT_DIR,
+    DEFAULT_EVAL_OPENING_TEMP_MOVES,
+    PhaseTimer,
+    W,
+    ckpt_prefix,
+    champion_path,
+    fmt_time,
+    hr,
+    load_latest_checkpoint,
+    load_model_at,
+    run_evaluation,
+    save_checkpoint,
+    section,
+)
 from train.train import _worker_self_play, self_play, train_step
 
 # Game registry: preset's "game" field → (class, display name)
@@ -162,202 +177,6 @@ PRESETS = {
     },
 }
 
-# Default arena threshold for presets that don't specify one explicitly.
-DEFAULT_ARENA_THRESHOLD = 0.55
-
-# Default number of opening moves sampled from the MCTS visit policy during
-# arena evaluation. Without this, both networks play deterministically from a
-# fixed start and every game in the eval batch collapses to the same line.
-DEFAULT_EVAL_OPENING_TEMP_MOVES = 2
-
-DEFAULT_CHECKPOINT_DIR = "checkpoints"
-W = 70  # console width
-
-
-# ── Display helpers ───────────────────────────────────────────────────────────
-
-
-def _fmt_time(s):
-    """Human-readable duration: 450ms / 1.2s / 2m03s / 1h04m."""
-    if s < 1.0:
-        return f"{s * 1000:.0f}ms"
-    if s < 60:
-        return f"{s:.1f}s"
-    m, sec = divmod(int(s), 60)
-    if m < 60:
-        return f"{m}m{sec:02d}s"
-    h, m = divmod(m, 60)
-    return f"{h}h{m:02d}m"
-
-
-def _hr(char="─"):
-    return char * W
-
-
-def _section(title, char="─"):
-    pad = W - len(title) - 4
-    return f"── {title} " + char * max(0, pad)
-
-
-class PhaseTimer:
-    """Rolling-window timing tracker for named phases."""
-
-    def __init__(self, window=20):
-        self._data = {}
-        self._window = window
-
-    def record(self, phase, elapsed):
-        if phase not in self._data:
-            self._data[phase] = collections.deque(maxlen=self._window)
-        self._data[phase].append(elapsed)
-
-    def mean(self, phase):
-        d = self._data.get(phase, [])
-        return sum(d) / len(d) if d else 0.0
-
-    def last(self, phase):
-        d = self._data.get(phase)
-        return d[-1] if d else 0.0
-
-
-# ── Checkpoint helpers ────────────────────────────────────────────────────────
-
-
-def save_checkpoint(path, iteration, model, optimizer, loss_history, args):
-    """Save training state.
-
-    Checkpoint keys: iteration, model_state_dict, optimizer_state_dict,
-                     loss_history, args.
-    """
-    torch.save(
-        {
-            "iteration": iteration,
-            "model_state_dict": model.state_dict(),
-            "optimizer_state_dict": optimizer.state_dict(),
-            "loss_history": loss_history,
-            "args": {k: v for k, v in args.items() if not k.startswith("_")},
-        },
-        path,
-    )
-
-
-def load_latest_checkpoint(checkpoint_dir, game, args):
-    """Scan checkpoint_dir for <game>_iter_*.pt and load the highest-numbered one.
-
-    Returns (model, optimizer, iteration, loss_history).
-    If no checkpoint is found, returns (None, None, None, []).
-    """
-    os.makedirs(checkpoint_dir, exist_ok=True)
-    files = sorted(glob.glob(os.path.join(checkpoint_dir, f"{_ckpt_prefix(args)}*.pt")))
-    if not files:
-        return None, None, None, []
-
-    ckpt = torch.load(files[-1], weights_only=False)
-    model = ResNet(
-        game, num_res_blocks=args["num_res_blocks"], num_hidden=args["num_hidden"]
-    )
-    model.load_state_dict(ckpt["model_state_dict"])
-    optimizer = optim.Adam(model.parameters(), lr=args["lr"])
-    optimizer.load_state_dict(ckpt["optimizer_state_dict"])
-    return model, optimizer, ckpt["iteration"], ckpt.get("loss_history", [])
-
-
-def _load_model_at(path, game, args):
-    """Load a ResNet from a checkpoint path, in eval mode."""
-    ckpt = torch.load(path, weights_only=False)
-    model = ResNet(
-        game, num_res_blocks=args["num_res_blocks"], num_hidden=args["num_hidden"]
-    )
-    model.load_state_dict(ckpt["model_state_dict"])
-    model.eval()
-    return model
-
-
-def _ckpt_prefix(args):
-    """Checkpoint filename prefix derived from the game name (e.g., 'chess_iter_')."""
-    return f"{args['game']}_iter_"
-
-
-def _champion_path(checkpoint_dir, args):
-    """Path of the arena-gated 'best so far' checkpoint for this game."""
-    return os.path.join(checkpoint_dir, f"{args['game']}_best.pt")
-
-
-# ── Evaluation ────────────────────────────────────────────────────────────────
-
-
-def _play_eval_game(game, mcts_white, mcts_black, max_moves, opening_temp_moves=0):
-    """Play one eval game. Returns 1 (white wins), -1 (black wins), 0 (draw).
-
-    The first `opening_temp_moves` moves are sampled proportionally to the
-    MCTS visit policy so games starting from the same position diverge;
-    remaining moves are played greedily (argmax) to measure best-play strength.
-    """
-    state = game.get_initial_state()
-    player = 1
-    mcts_white._root = None
-    mcts_black._root = None
-
-    for move_count in range(max_moves):
-        mcts = mcts_white if player == 1 else mcts_black
-        policy = mcts.search(state, player)
-        if move_count < opening_temp_moves:
-            action = int(np.random.choice(game.action_size, p=policy))
-        else:
-            action = int(np.argmax(policy))
-        # Both trees advance so tree reuse stays valid for both sides
-        mcts_white.advance_root(action)
-        mcts_black.advance_root(action)
-        state = game.update_state(state, action, player)
-        value, terminated = game.get_value_and_terminated(state, action)
-        if terminated:
-            return 0 if value == 0 else player  # player who just moved won
-        player = game.get_opponent(player)
-
-    return 0  # draw by move limit
-
-
-def run_evaluation(game, new_model, old_model, args):
-    """Play eval_games between new_model and old_model, alternating colours.
-
-    Returns dict: wins, draws, losses, win_rate — all from new_model's perspective.
-    """
-    n = args["eval_games"]
-    searches = args["eval_searches"]
-    opening_temp_moves = args.get(
-        "eval_opening_temp_moves", DEFAULT_EVAL_OPENING_TEMP_MOVES
-    )
-    wins = draws = losses = 0
-
-    for i in range(n):
-        mcts_new = MCTS(game, model=new_model, num_searches=searches)
-        mcts_old = MCTS(game, model=old_model, num_searches=searches)
-        new_is_white = i % 2 == 0
-        if new_is_white:
-            result = _play_eval_game(
-                game, mcts_new, mcts_old, args["max_moves"], opening_temp_moves
-            )
-            if result == 1:
-                wins += 1
-            elif result == -1:
-                losses += 1
-            else:
-                draws += 1
-        else:
-            result = _play_eval_game(
-                game, mcts_old, mcts_new, args["max_moves"], opening_temp_moves
-            )
-            if result == -1:
-                wins += 1
-            elif result == 1:
-                losses += 1
-            else:
-                draws += 1
-
-    win_rate = (wins + 0.5 * draws) / n if n > 0 else 0.0
-    return {"wins": wins, "draws": draws, "losses": losses, "win_rate": win_rate}
-
-
 # ── Training loop ─────────────────────────────────────────────────────────────
 
 
@@ -387,7 +206,7 @@ def run_training(preset_name="S", device=None, checkpoint_dir=None):
     os.makedirs(checkpoint_dir, exist_ok=True)
 
     # ── Header ───────────────────────────────────────────────────────────────
-    print(_hr("═"))
+    print(hr("═"))
     print(f"  AlphaZero {game_display} — {preset_name} preset")
     print(f"  {args['_description']}")
     print(
@@ -429,7 +248,7 @@ def run_training(preset_name="S", device=None, checkpoint_dir=None):
         f"  (opening temp moves={opening_temp_moves})"
     )
     print(f"  Device : {device}  |  dir: {checkpoint_dir}")
-    print(_hr("═"))
+    print(hr("═"))
 
     # ── Resume or fresh start ─────────────────────────────────────────────────
     model, optimizer, start_iter, loss_history = load_latest_checkpoint(
@@ -445,7 +264,7 @@ def run_training(preset_name="S", device=None, checkpoint_dir=None):
         # Save iter-0 baseline AND make it the initial champion. The first
         # arena eval will gate replacement of this champion by the trainee.
         save_checkpoint(
-            os.path.join(checkpoint_dir, f"{_ckpt_prefix(args)}0000.pt"),
+            os.path.join(checkpoint_dir, f"{ckpt_prefix(args)}0000.pt"),
             0,
             model,
             optimizer,
@@ -453,7 +272,7 @@ def run_training(preset_name="S", device=None, checkpoint_dir=None):
             args,
         )
         save_checkpoint(
-            _champion_path(checkpoint_dir, args),
+            champion_path(checkpoint_dir, args),
             0,
             model,
             optimizer,
@@ -462,7 +281,7 @@ def run_training(preset_name="S", device=None, checkpoint_dir=None):
         )
         print(f"  Fresh start. Saved iter-0 baseline and initial champion.")
     else:
-        champ_path = _champion_path(checkpoint_dir, args)
+        champ_path = champion_path(checkpoint_dir, args)
         if os.path.exists(champ_path):
             champ_iter = torch.load(champ_path, weights_only=False).get("iteration", "?")
             print(f"  Resumed from iter {start_iter}; champion = iter {champ_iter}.")
@@ -505,7 +324,7 @@ def run_training(preset_name="S", device=None, checkpoint_dir=None):
         ts = datetime.now().strftime("%H:%M:%S")
         print()
         print(
-            _section(f"Iter {iter_num}/{args['num_iterations']}  [{preset_name}]  {ts}")
+            section(f"Iter {iter_num}/{args['num_iterations']}  [{preset_name}]  {ts}")
         )
 
         # LR milestone
@@ -545,7 +364,7 @@ def run_training(preset_name="S", device=None, checkpoint_dir=None):
             bar = "█" * filled + "░" * (bar_w - filled)
             print(
                 f"\r  Self-play  [{bar}] {n_done:{ng_w}}/{n_games}"
-                f"  avg {avg} moves  {_fmt_time(elapsed):>6}   ",
+                f"  avg {avg} moves  {fmt_time(elapsed):>6}   ",
                 end="",
                 flush=True,
             )
@@ -584,7 +403,7 @@ def run_training(preset_name="S", device=None, checkpoint_dir=None):
         print(
             f"\r  Self-play   {n_games} games"
             f"  +{len(new_examples):,} ex  buf {buf_size:,}/{args['replay_buffer_size']:,}"
-            f"  [{_fmt_time(sp_time)}]          "
+            f"  [{fmt_time(sp_time)}]          "
         )
         print(
             f"  moves: {mc[0]}–{mc[-1]}"
@@ -622,7 +441,7 @@ def run_training(preset_name="S", device=None, checkpoint_dir=None):
             print(
                 f"\r  Training    epoch {epoch_i+1}/{n_epochs}"
                 f"  step {n_steps}  loss={ep_loss:.4f}"
-                f"  {_fmt_time(time.perf_counter() - t0):>6}   ",
+                f"  {fmt_time(time.perf_counter() - t0):>6}   ",
                 end="",
                 flush=True,
             )
@@ -639,7 +458,7 @@ def run_training(preset_name="S", device=None, checkpoint_dir=None):
         print(
             f"\r  Training    {n_epochs} epochs  {n_steps} steps  batch={bsz}"
             f"  loss={avg_loss:.4f}{loss_trend}"
-            f"  [{_fmt_time(train_time)}]          "
+            f"  [{fmt_time(train_time)}]          "
         )
 
         # ── Iteration summary ─────────────────────────────────────────────
@@ -650,16 +469,16 @@ def run_training(preset_name="S", device=None, checkpoint_dir=None):
         sp_avg = timer.mean("self_play")
         tr_avg = timer.mean("train")
         print(
-            f"  {_hr('·')[:W-2]}\n"
-            f"  Total {_fmt_time(iter_total)}"
-            f"  (sp {_fmt_time(sp_avg)} avg  tr {_fmt_time(tr_avg)} avg)"
-            f"  │  ETA {_fmt_time(eta)}"
+            f"  {hr('·')[:W-2]}\n"
+            f"  Total {fmt_time(iter_total)}"
+            f"  (sp {fmt_time(sp_avg)} avg  tr {fmt_time(tr_avg)} avg)"
+            f"  │  ETA {fmt_time(eta)}"
         )
 
         # ── Checkpoint ────────────────────────────────────────────────────
         if iter_num % args["checkpoint_interval"] == 0:
             ckpt_path = os.path.join(
-                checkpoint_dir, f"{_ckpt_prefix(args)}{iter_num:04d}.pt"
+                checkpoint_dir, f"{ckpt_prefix(args)}{iter_num:04d}.pt"
             )
             save_checkpoint(ckpt_path, iter_num, model, optimizer, loss_history, args)
             with open(os.path.join(checkpoint_dir, "loss_history.json"), "w") as f:
@@ -668,14 +487,14 @@ def run_training(preset_name="S", device=None, checkpoint_dir=None):
 
         # ── Arena eval & gating ───────────────────────────────────────────
         if iter_num % args["eval_interval"] == 0:
-            champ_path = _champion_path(checkpoint_dir, args)
+            champ_path = champion_path(checkpoint_dir, args)
             if os.path.exists(champ_path):
                 champ_ckpt = torch.load(champ_path, weights_only=False)
                 champ_iter = champ_ckpt.get("iteration", 0)
                 print(
-                    f"\n  {_section(f'Arena: iter {iter_num} vs champion (iter {champ_iter})', char='┄')}"
+                    f"\n  {section(f'Arena: iter {iter_num} vs champion (iter {champ_iter})', char='┄')}"
                 )
-                old_model = _load_model_at(champ_path, game, args).to(device)
+                old_model = load_model_at(champ_path, game, args).to(device)
                 t0 = time.perf_counter()
                 result = run_evaluation(game, model, old_model, args)
                 eval_time = time.perf_counter() - t0
@@ -693,7 +512,7 @@ def run_training(preset_name="S", device=None, checkpoint_dir=None):
                     verdict = f"· champion held at iter {champ_iter}"
                 print(
                     f"  {w}W {d}D {l}L  win rate {wr:.1%}  {verdict}"
-                    f"  [{_fmt_time(eval_time)}]"
+                    f"  [{fmt_time(eval_time)}]"
                 )
 
                 # Persist eval results so the notebook can plot win rate over time
@@ -718,21 +537,21 @@ def run_training(preset_name="S", device=None, checkpoint_dir=None):
 
     # ── Final summary ─────────────────────────────────────────────────────────
     print()
-    print(_hr("═"))
+    print(hr("═"))
     print(
         f"  Training complete — {preset_name} preset  {args['num_iterations']} iterations"
     )
     if loss_history:
         print(f"  Loss   : {loss_history[0]:.4f} → {loss_history[-1]:.4f}")
     print(
-        f"  Timing : self-play {_fmt_time(timer.mean('self_play'))} avg"
-        f"  │  training {_fmt_time(timer.mean('train'))} avg"
-        f"  │  total {_fmt_time(timer.mean('iter'))} avg/iter"
+        f"  Timing : self-play {fmt_time(timer.mean('self_play'))} avg"
+        f"  │  training {fmt_time(timer.mean('train'))} avg"
+        f"  │  total {fmt_time(timer.mean('iter'))} avg/iter"
     )
     if timer.mean("eval") > 0:
-        print(f"  Eval   : {_fmt_time(timer.mean('eval'))} avg per eval round")
+        print(f"  Eval   : {fmt_time(timer.mean('eval'))} avg per eval round")
     print(f"  Output : {checkpoint_dir}")
-    print(_hr("═"))
+    print(hr("═"))
 
     return model, loss_history
 

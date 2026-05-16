@@ -1,2 +1,10 @@
 /target
 Cargo.lock
+
+# Phase 3 inference parity fixtures. Regenerate via
+#   uv run python tools/gen_inference_parity_fixtures.py
+# The ONNX is ~33 MB (chess policy head dominates) and the JSON reference
+# is ~2 MB; both reproducible from a fixed seed, so committing them would
+# just bloat the repo.
+tests/fixtures/chess_inference.onnx
+tests/fixtures/chess_inference.json
